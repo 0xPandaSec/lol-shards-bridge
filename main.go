@@ -2,12 +2,12 @@
 // -----------------------------------
 // Liest das Lockfile des laufenden LoL-Clients, spricht dessen lokale
 // LCU-HTTPS-API an und stellt die Web-UI + API auf http://127.0.0.1:PORT bereit.
-// Nur Go-Standardbibliothek. Optionale Absicherung gegen fremde Webseiten:
-//  - ohne --allow-origin/--key werden fremde Ursprünge abgelehnt (403)
-//  - mit --key können entfernte Frontends per X-UI-Key-Header zugreifen
+// Nur Go-Standardbibliothek. Absicherung gegen fremde Webseiten:
+//  - die offizielle WebUI-Origin (defaultAllowedOrigin) ist standardmäßig erlaubt
+//  - weitere Ursprünge per --allow-origin; entfernte Frontends per --key (X-UI-Key)
 //
 // Bauen:    go build -trimpath -ldflags "-s -w" -o bridge.exe .
-// Starten:  bridge.exe [--port 8700] [--key geheim] [--allow-origin https://...]
+// Starten:  bridge.exe  (Doppelklick) — für weitere Ursprünge: bridge.exe --allow-origin https://...
 package main
 
 import (
@@ -808,11 +808,20 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Main ---
 
+// defaultAllowedOrigin ist die offizielle WebUI-Adresse. Sie ist
+// standardmäßig erlaubt, damit die Bridge per Doppelklick (ohne Flags)
+// mit der WebUI unter https://lolshards.pandasec.de zusammenarbeitet.
+const defaultAllowedOrigin = "https://lolshards.pandasec.de"
+
+// webUIURL wird nach dem Start automatisch im Standardbrowser geöffnet.
+const webUIURL = "https://lolshards.pandasec.de"
+
 func main() {
 	flagPort := flag.Int("port", 8700, "WebUI-Port (default 8700)")
 	flagKey := flag.String("key", "", "optionaler Zugangsschlüssel für entfernte Frontends")
 	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
 	flagNoBrowser := flag.Bool("no-browser", false, "Browser nicht automatisch öffnen")
+	flagLocal := flag.Bool("local", false, "statt der Webseite die eingebettete lokale Oberfläche öffnen")
 	flag.Parse()
 
 	lf := findLockfile()
@@ -825,7 +834,7 @@ func main() {
 	}
 
 	service := NewService(client)
-	var origins []string
+	origins := []string{defaultAllowedOrigin}
 	if *flagOrigins != "" {
 		for _, o := range strings.Split(*flagOrigins, ",") {
 			if o = strings.TrimSpace(o); o != "" {
@@ -875,7 +884,11 @@ func main() {
 	if !*flagNoBrowser {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
-			openBrowser("http://" + addr + "/")
+			if *flagLocal {
+				openBrowser("http://" + addr + "/")
+			} else {
+				openBrowser(webUIURL)
+			}
 		}()
 	}
 	log.Printf("Zum Beenden: Strg+C")

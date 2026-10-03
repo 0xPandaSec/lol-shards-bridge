@@ -34,35 +34,22 @@ Verbindung zu deinem League-Client.
 2. **League of Legends starten** und dich einloggen (der Client muss während
    der Nutzung offen bleiben).
 
-3. Die **Bridge starten**. Für die entfernte WebUI mit deinem Ursprung:
+3. Die **Bridge starten** – einfach auf **bridge.exe doppelklicken**. Keine
+   Flags nötig: Die Bridge kennt die WebUI (https://lolshards.pandasec.de)
+   automatisch und **öffnet sie direkt in deinem Browser**. Das
+   Terminal-Fenster dabei **offen lassen**.
 
-   ```
-   bridge.exe --allow-origin https://lolshards.pandasec.de
-   ```
+4. Fertig – in der WebUI kannst du Shards entzaubern und aktivieren.
 
-   Das Terminal(-Fenster) dabei **offen lassen**. Die Bridge wartet darauf,
-   den League-Client zu finden (schließt den Prozess nicht, während du spielst).
-
-4. Die **WebUI öffnen**: https://lolshards.pandasec.de
-
-   Der Browser verbindet sich automatisch mit der Bridge
-   (`127.0.0.1:8700`) und lädt deine Shards. Ist die Bridge noch nicht
-   gestartet, zeigt die Seite eine Anleitung.
-
-5. Optional: **Selbst bauen** (mit Go installiert):
-
-   ```
-   build.bat
-   ```
-
-## Optionen
+## Optionen (optional)
 
 | Flag | Erklärung |
 |------|-----------|
-| `--port <nummer>` | Port, Standard `8700` |
-| `--key <geheim>` | API-Key; wird dann via `X-UI-Key`-Header erwartet |
-| `--allow-origin <url>` | Zusätzliche erlaubte Ursprünge (mehrfach möglich) |
 | `--no-browser` | Öffnet den Browser beim Start nicht |
+| `--local` | Öffnet statt der Webseite die eingebettete lokale Oberfläche |
+| `--port <nummer>` | Port, Standard `8700` |
+| `--allow-origin <url>` | Weitere erlaubte Ursprünge, z. B. eigene Domain (mehrfach möglich) |
+| `--key <geheim>` | API-Key; wird dann via `X-UI-Key`-Header erwartet |
 
 ## Datenschutz
 
