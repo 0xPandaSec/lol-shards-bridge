@@ -46,7 +46,7 @@ Verbindung zu deinem League-Client.
 | Flag | Erklärung |
 |------|-----------|
 | `--no-browser` | Öffnet den Browser beim Start nicht |
-| `--local` | Öffnet statt der Webseite die eingebettete lokale Oberfläche |
+| `--open <url>` | Andere Adresse, die der Browser öffnen soll |
 | `--port <nummer>` | Port, Standard `8700` |
 | `--allow-origin <url>` | Weitere erlaubte Ursprünge, z. B. eigene Domain (mehrfach möglich) |
 | `--key <geheim>` | API-Key; wird dann via `X-UI-Key`-Header erwartet |

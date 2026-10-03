@@ -13,7 +13,6 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
-	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -35,8 +34,6 @@ import (
 	"time"
 )
 
-//go:embed page.html
-var pageHTML string
 
 // ---------------------------------------------------------------------------
 // Lockfile-Erkennung
@@ -818,7 +815,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.5"
+const version = "1.1.6"
 
 var logFile *os.File
 var logPath string
@@ -860,7 +857,6 @@ func main() {
 	flagKey := flag.String("key", "", "optionaler Zugangsschlüssel für entfernte Frontends")
 	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
 	flagNoBrowser := flag.Bool("no-browser", false, "Browser nicht automatisch öffnen")
-	flagLocal := flag.Bool("local", false, "statt der Webseite die eingebettete lokale Oberfläche öffnen")
 	flagOpen := flag.String("open", "", "welche URL der Browser öffnen soll (Standard: die WebUI)")
 	flag.Parse()
 
@@ -917,13 +913,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-store")
-			io.WriteString(w, pageHTML)
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
 			return
 		}
-		http.NotFound(w, r)
+		// Die Web-UI liegt remote – direkter Aufruf der Bridge leitet dorthin.
+		http.Redirect(w, r, webUIURL, http.StatusFound)
 	})
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -957,11 +952,8 @@ func main() {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
 			target := webUIURL
-			switch {
-			case *flagOpen != "":
+			if *flagOpen != "" {
 				target = *flagOpen
-			case *flagLocal:
-				target = "http://" + addr + "/"
 			}
 			openBrowser(target)
 		}()
