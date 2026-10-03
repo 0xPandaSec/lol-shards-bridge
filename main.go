@@ -815,7 +815,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.6"
+const version = "1.1.7"
 
 var logFile *os.File
 var logPath string
@@ -959,6 +959,7 @@ func main() {
 		}()
 	}
 	log.Printf("Zum Beenden: Strg+C")
+	printReady()
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		say("FATAL:", err)
 		time.Sleep(10 * time.Second)
@@ -974,4 +975,27 @@ func openBrowser(url string) {
 	default:
 		exec.Command("xdg-open", url).Start()
 	}
+}
+
+// printReady zeigt ein ASCII-Art-Banner, sobald die Bridge fertig ist.
+func printReady() {
+	art := `#============================================#
+#  ####.  ####.  #####  ####.  .####  #####  #
+#  #...#  #...#  ..#..  #...#  #....  #....  #
+#  ####.  ####.  ..#..  #...#  #.###  ####.  #
+#  #...#  #.#..  ..#..  #...#  #...#  #....  #
+#  ####.  #...#  #####  ####.  .###.  #####  #
+#                                            #
+#                                            #
+#  ####.  #####  .##..  ####.  #...#         #
+#  #...#  #....  #..#.  #...#  #...#         #
+#  ####.  ####.  #####  #...#  .#.#.         #
+#  #.#..  #....  #..#.  #...#  ..#..         #
+#  #...#  #####  #..#.  ####.  ..#..         #
+#============================================#`
+	for _, l := range strings.Split(art, "\n") {
+		say(l)
+	}
+	say("")
+	say("Bridge ist bereit – WebUI wird geöffnet: " + webUIURL)
 }
