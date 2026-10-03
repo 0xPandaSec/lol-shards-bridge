@@ -632,6 +632,9 @@ func (a *App) poller() {
 
 func (a *App) corsAndGuard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Für Chrome/Firefox "Private Network Access": erlaubt lokale Bridges
+		// von öffentlichen Webseiten aus zu erreichen (Sicherheits-Preflight).
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
 		origin := r.Header.Get("Origin")
 		if origin != "" && !sameOrigin(r, origin) {
 			allow := false
@@ -811,11 +814,16 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 // mit der WebUI unter https://lolshards.pandasec.de zusammenarbeitet.
 const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 
+// testAllowedOrigin erlaubt zusätzlich den Zugriff über die reine IP,
+// damit die Seite auch ohne (bzw. vor ausgereifter) DNS-Auflösung getestet
+// werden kann (Caddy-Duplikat http://217.160.49.55).
+const testAllowedOrigin = "http://217.160.49.55"
+
 // webUIURL wird nach dem Start automatisch im Standardbrowser geöffnet.
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.2.1"
+const version = "1.2.2"
 
 var logFile *os.File
 var logPath string
@@ -892,7 +900,7 @@ func main() {
 	say("Verbunden mit dem LoL-Client (Port", client.Port(), ").")
 
 	service := NewService(client)
-	origins := []string{defaultAllowedOrigin}
+	origins := []string{defaultAllowedOrigin, testAllowedOrigin}
 	if *flagOrigins != "" {
 		for _, o := range strings.Split(*flagOrigins, ",") {
 			if o = strings.TrimSpace(o); o != "" {
@@ -921,11 +929,11 @@ func main() {
 		// Die Web-UI liegt remote – direkter Aufruf der Bridge leitet dorthin.
 		http.Redirect(w, r, webUIURL, http.StatusFound)
 	})
-	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/ping", app.corsAndGuard(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		io.WriteString(w, `{"ok":true,"bridge":"go"}`)
-	})
+	}))
 	mux.HandleFunc("/api/loot", app.corsAndGuard(app.lootHandler))
 	mux.HandleFunc("/api/craft", app.corsAndGuard(app.craftHandler))
 	mux.HandleFunc("/api/img", app.corsAndGuard(app.imgHandler))
