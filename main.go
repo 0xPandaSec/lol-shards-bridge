@@ -815,7 +815,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.9"
+const version = "1.2.0"
 
 var logFile *os.File
 var logPath string
@@ -978,8 +978,18 @@ func openBrowser(url string) {
 	}
 }
 
+// clearConsole leert den Konsolenbildschirm (nur das Banner bleibt stehen).
+func clearConsole() {
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("cmd", "/c", "cls").Run()
+		return
+	}
+	fmt.Print("\x1b[2J\x1b[H")
+}
+
 // printReady zeigt ein ASCII-Art-Banner, sobald die Bridge fertig ist.
 func printReady() {
+	clearConsole()
 	art := `+==============================================+
 |                                              |
 | ██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗ |
