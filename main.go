@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -817,7 +818,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.3"
+const version = "1.1.4"
 
 var logFile *os.File
 var logPath string
@@ -934,9 +935,20 @@ func main() {
 	mux.HandleFunc("/api/stream", app.corsAndGuard(app.streamHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
-	srv := &http.Server{Addr: addr, Handler: mux}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		say("")
+		sayf("FEHLER: Port %d ist bereits belegt.", *flagPort)
+		say("Es läuft vermutlich schon eine alte bridge.exe.")
+		say("Schließe alle bridge.exe-Prozesse (Task-Manager) und starte die Bridge neu.")
+		say("Das Fenster schließt sich in 15 Sekunden.")
+		time.Sleep(15 * time.Second)
+		os.Exit(1)
+	}
+	srv := &http.Server{Handler: mux}
+	sayf("Verbindung zum LoL-Client hergestellt (Port %d).", client.Port())
 	log.Printf("Verbindung zum LoL-Client hergestellt (Port %d).", client.Port())
-	log.Printf("WebUI läuft: http://%s/", addr)
+	sayf("WebUI läuft: http://%s/", addr)
 	if *flagKey != "" {
 		log.Printf("Entfernte Frontends müssen den X-UI-Key-Header senden.")
 	}
@@ -951,8 +963,9 @@ func main() {
 		}()
 	}
 	log.Printf("Zum Beenden: Strg+C")
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		say("FATAL:", err)
+		time.Sleep(10 * time.Second)
 	}
 }
 
