@@ -1,58 +1,58 @@
 # LoL-Shard-Bridge
 
-## Das Problem
+## The problem
 
-Der League-of-Legends-Client bietet **kein Massen-Entzaubern** an: Jeder
-Champion-, Skin- oder Augen-Shard muss über unzählige Klicks einzeln
-entzaubert oder aktiviert werden. Sind mehrere Shards im Inventar, wird das
-schnell zeitraubend und nervig.
+The League of Legends client has **no bulk-disenchant**: every champion,
+skin or ward shard has to be disenchanted or unlocked individually, click
+by click. With several shards in your inventory that quickly becomes
+tedious and annoying.
 
-## Die Lösung: WebUI
+## The solution: WebUI
 
-Die **LoL-Shards-WebUI** übernimmt das für dich – sortieren, Mehrfachauswahl,
-„Doppelte entfernen“ und mit einem Klick **alle Shards entzaubern** oder
-Champions **aktivieren**. Die WebUI läuft über
-**https://lolshards.pandasec.de** und zeigt deine Shards übersichtlich an.
+The **LoL-Shards-WebUI** takes care of that for you — sorting, multi-select,
+"remove duplicates" and with a single click **disenchant all shards** or
+**unlock champions**. The WebUI runs at **https://lolshards.pandasec.de**
+and shows your shards at a glance.
 
-## Warum die Bridge?
+## Why the bridge?
 
-Deine Shards liegen **nicht** auf einem Server, sondern nur in deinem
-lokalen League-Client. Damit die WebUI (im Browser) mit deinem Client reden
-kann, vermittelt die **Bridge** – ein kleines Programm, das du lokal auf
-deinem Rechner startest. Sie spricht mit dem Client über dessen lokale
-LCU-API und deine Spieldaten verlassen deinen Rechner dabei nicht.
+Your shards do **not** live on a server — they only exist in your local
+League client. So the WebUI (in your browser) can talk to your client, the
+**bridge** mediates — a small program you run locally on your machine. It
+talks to the client through its local LCU API, and your game data never
+leaves your computer.
 
-**Kurz:** WebUI im Browser = Bedienoberfläche, Bridge auf deinem Rechner =
-Verbindung zu deinem League-Client.
+**In short:** WebUI in the browser = user interface, bridge on your machine =
+connection to your League client.
 
-## Installationsanleitung
+## Installation
 
-1. **bridge.exe** aus den
+1. Download **bridge.exe** from the
    [Releases](https://github.com/0xPandaSec/lol-shards-bridge/releases/latest)
-   herunterladen.
+   page.
 
-2. **League of Legends starten** und dich einloggen (der Client muss während
-   der Nutzung offen bleiben).
+2. **Start League of Legends** and log in (the client must stay open while
+   in use).
 
-3. Die **Bridge starten** – einfach auf **bridge.exe doppelklicken**. Keine
-   Flags nötig: Die Bridge kennt die WebUI (https://lolshards.pandasec.de)
-   automatisch und **öffnet sie direkt in deinem Browser**. Das
-   Terminal-Fenster dabei **offen lassen**.
+3. **Start the bridge** — just **double-click bridge.exe**. No flags needed:
+   the bridge knows the WebUI (https://lolshards.pandasec.de) automatically
+   and **opens it directly in your browser**. Keep the terminal window
+   **open**.
 
-4. Fertig – in der WebUI kannst du Shards entzaubern und aktivieren.
+4. Done — in the WebUI you can disenchant and unlock shards.
 
-## Optionen (optional)
+## Options (optional)
 
-| Flag | Erklärung |
-|------|-----------|
-| `--no-browser` | Öffnet den Browser beim Start nicht |
-| `--open <url>` | Andere Adresse, die der Browser öffnen soll |
-| `--port <nummer>` | Port, Standard `8700` |
-| `--allow-origin <url>` | Weitere erlaubte Ursprünge, z. B. eigene Domain (mehrfach möglich) |
-| `--key <geheim>` | API-Key; wird dann via `X-UI-Key`-Header erwartet |
+| Flag | Description |
+|------|-------------|
+| `--no-browser` | Do not open the browser on start |
+| `--open <url>` | A different address for the browser to open |
+| `--port <number>` | Port, default `8700` |
+| `--allow-origin <url>` | Additional allowed origins, e.g. your own domain (repeatable) |
+| `--key <secret>` | API key; then expected via the `X-UI-Key` header |
 
-## Datenschutz
+## Privacy
 
-Die Bridge kommuniziert ausschließlich **lokal** mit dem League-Client
-(`127.0.0.1`, Lockfile-geprüft). Es werden keine Spieldaten an Dritte
-übertragen.
+The bridge communicates exclusively **locally** with the League client
+(`127.0.0.1`, lockfile-verified). No game data is transmitted to third
+parties.
