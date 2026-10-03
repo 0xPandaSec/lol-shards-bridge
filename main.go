@@ -817,12 +817,17 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.2"
+const version = "1.1.3"
 
 var logFile *os.File
+var logPath string
 
 func openLog() {
-	if f, err := os.OpenFile("bridge.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+	logPath = "bridge.log"
+	if d, err := os.Executable(); err == nil {
+		logPath = filepath.Join(filepath.Dir(d), "bridge.log")
+	}
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 		logFile = f
 	}
 }
@@ -841,7 +846,15 @@ func sayf(format string, args ...any) {
 func main() {
 	openLog()
 	say("LoL-Shard-Bridge v" + version)
-	say("Log wird mitgeschrieben: bridge.log")
+	if logFile != nil {
+		say("Log wird mitgeschrieben: " + logPath)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			say("FATAL:", r)
+			time.Sleep(10 * time.Second)
+		}
+	}()
 	flagPort := flag.Int("port", 8700, "WebUI-Port (default 8700)")
 	flagKey := flag.String("key", "", "optionaler Zugangsschlüssel für entfernte Frontends")
 	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
