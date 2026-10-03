@@ -824,14 +824,37 @@ func main() {
 	flagLocal := flag.Bool("local", false, "statt der Webseite die eingebettete lokale Oberfläche öffnen")
 	flag.Parse()
 
-	lf := findLockfile()
-	if lf == nil {
-		log.Fatal("Keine Verbindung zum League-Client gefunden. LoL-Client starten und einloggen, dann erneut starten.")
+	// Auf den League-Client warten (Doppelklick-freundlich): kein sofortiger
+	// Abbruch, sondern Meldung + erneuter Versuch, bis LoL läuft und eingeloggt ist.
+	fmt.Println("LoL-Shard-Bridge")
+	fmt.Println("-----------------")
+	fmt.Println("Suche League-Client ... bitte warten.")
+	var client *Client
+	startWait := time.Now()
+	for attempt := 1; ; attempt++ {
+		if lf := findLockfile(); lf != nil {
+			c := NewClient(lf.Port, lf.Token)
+			if err := c.getJSON("/lol-summoner/v1/current-summoner", &map[string]any{}); err == nil {
+				client = c
+				break
+			}
+		}
+		if attempt%10 == 0 {
+			ellapsed := int(time.Since(startWait).Seconds())
+			fmt.Printf("Client noch nicht bereit (%ds) – ist LoL gestartet und eingeloggt?\n", ellapsed)
+		}
+		if time.Since(startWait) > 120*time.Second {
+			fmt.Println()
+			fmt.Println("Kein League-Client gefunden.")
+			fmt.Println("Starte zuerst League of Legends und logge dich ein,")
+			fmt.Println("danach bridge.exe noch einmal starten.")
+			fmt.Println("Das Fenster schließt sich in 10 Sekunden.")
+			time.Sleep(10 * time.Second)
+			os.Exit(1)
+		}
+		time.Sleep(time.Second)
 	}
-	client := NewClient(lf.Port, lf.Token)
-	if err := client.getJSON("/lol-summoner/v1/current-summoner", &map[string]any{}); err != nil {
-		log.Fatalf("LCU-Anfrage fehlgeschlagen (Port %d): %v", lf.Port, err)
-	}
+	fmt.Println("Verbunden mit dem LoL-Client (Port", client.Port(), ").")
 
 	service := NewService(client)
 	origins := []string{defaultAllowedOrigin}
@@ -876,7 +899,7 @@ func main() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
 	srv := &http.Server{Addr: addr, Handler: mux}
-	log.Printf("Verbindung zum LoL-Client hergestellt (Port %d).", lf.Port)
+	log.Printf("Verbindung zum LoL-Client hergestellt (Port %d).", client.Port())
 	log.Printf("WebUI läuft: http://%s/", addr)
 	if *flagKey != "" {
 		log.Printf("Entfernte Frontends müssen den X-UI-Key-Header senden.")
