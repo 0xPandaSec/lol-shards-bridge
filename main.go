@@ -818,7 +818,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.4"
+const version = "1.1.5"
 
 var logFile *os.File
 var logPath string
@@ -861,6 +861,7 @@ func main() {
 	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
 	flagNoBrowser := flag.Bool("no-browser", false, "Browser nicht automatisch öffnen")
 	flagLocal := flag.Bool("local", false, "statt der Webseite die eingebettete lokale Oberfläche öffnen")
+	flagOpen := flag.String("open", "", "welche URL der Browser öffnen soll (Standard: die WebUI)")
 	flag.Parse()
 
 	// Auf den League-Client warten (Doppelklick-freundlich): kein sofortiger
@@ -955,11 +956,14 @@ func main() {
 	if !*flagNoBrowser {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
-			if *flagLocal {
-				openBrowser("http://" + addr + "/")
-			} else {
-				openBrowser(webUIURL)
+			target := webUIURL
+			switch {
+			case *flagOpen != "":
+				target = *flagOpen
+			case *flagLocal:
+				target = "http://" + addr + "/"
 			}
+			openBrowser(target)
 		}()
 	}
 	log.Printf("Zum Beenden: Strg+C")
