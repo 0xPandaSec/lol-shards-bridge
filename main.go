@@ -375,7 +375,9 @@ func (s *Service) summary() (map[string]any, error) {
 		}
 	}
 	owned := s.ownedChampionIDs()
-	var champs, skins, wards []map[string]any
+	champs := []map[string]any{}
+	skins := []map[string]any{}
+	wards := []map[string]any{}
 	for _, it := range loot {
 		switch it.Type {
 		case "CHAMPION_RENTAL":
