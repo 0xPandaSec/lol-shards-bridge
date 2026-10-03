@@ -1,0 +1,4 @@
+bridge.exe
+bridge.exe~
+__pycache__/
+*.pyc

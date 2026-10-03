@@ -1,0 +1,896 @@
+// LoL Shard WebUI — lokale Go-Bridge
+// -----------------------------------
+// Liest das Lockfile des laufenden LoL-Clients, spricht dessen lokale
+// LCU-HTTPS-API an und stellt die Web-UI + API auf http://127.0.0.1:PORT bereit.
+// Nur Go-Standardbibliothek. Optionale Absicherung gegen fremde Webseiten:
+//  - ohne --allow-origin/--key werden fremde Ursprünge abgelehnt (403)
+//  - mit --key können entfernte Frontends per X-UI-Key-Header zugreifen
+//
+// Bauen:    go build -trimpath -ldflags "-s -w" -o bridge.exe .
+// Starten:  bridge.exe [--port 8700] [--key geheim] [--allow-origin https://...]
+package main
+
+import (
+	"bytes"
+	"crypto/tls"
+	_ "embed"
+	"encoding/base64"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+//go:embed page.html
+var pageHTML string
+
+// ---------------------------------------------------------------------------
+// Lockfile-Erkennung
+// ---------------------------------------------------------------------------
+
+var lockfileStatic = []string{
+	`C:\Riot Games\League of Legends\lockfile`,
+	`D:\Riot Games\League of Legends\lockfile`,
+	`E:\Riot Games\League of Legends\lockfile`,
+}
+
+var lockRE = regexp.MustCompile(`^[^:]+:(\d+):(\d+):([^:]+):(https|wss)$`)
+
+type Lockfile struct {
+	Port  int
+	Token string
+}
+
+func lockfileCandidates() []string {
+	set := map[string]bool{}
+	for _, c := range lockfileStatic {
+		set[c] = true
+	}
+	for _, root := range []string{`C:\Riot Games`, `D:\Riot Games`, `E:\Riot Games`} {
+		matches, _ := filepath.Glob(filepath.Join(root, "*", "lockfile"))
+		for _, m := range matches {
+			d := strings.TrimSpace(strings.ToLower(filepath.ToSlash(filepath.Dir(m))))
+			if strings.HasSuffix(d, "league-of-legends") || strings.HasSuffix(d, "league of legends") {
+				set[m] = true
+			}
+		}
+	}
+	meta, _ := filepath.Glob(`C:\ProgramData\Riot Games\Metadata\league_of_legends*\**\*.lockfile`)
+	for _, m := range meta {
+		set[m] = true
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	return out
+}
+
+func readLockfile(path string) *Lockfile {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	m := lockRE.FindStringSubmatch(strings.TrimSpace(string(b)))
+	if m == nil {
+		return nil
+	}
+	port, _ := strconv.Atoi(m[2])
+	return &Lockfile{Port: port, Token: m[3]}
+}
+
+func findLockfile() *Lockfile {
+	for _, p := range lockfileCandidates() {
+		if lf := readLockfile(p); lf != nil {
+			return lf
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// LCU-HTTP-Client (selbstsigniertes Zertifikat ok)
+// ---------------------------------------------------------------------------
+
+type LcuError struct {
+	Status  int
+	Message string
+}
+
+func (e *LcuError) Error() string { return e.Message }
+
+type Client struct {
+	port  int
+	tok   string
+	httpc *http.Client
+}
+
+func NewClient(port int, token string) *Client {
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	return &Client{port: port, tok: token, httpc: &http.Client{Transport: tr, Timeout: 15 * time.Second}}
+}
+
+func (c *Client) Port() int   { return c.port }
+func (c *Client) Token() string { return c.tok }
+
+func (c *Client) do(method, path string, payload any) ([]byte, error) {
+	var body io.Reader
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(b)
+	}
+	u := fmt.Sprintf("https://127.0.0.1:%d/%s", c.port, strings.TrimLeft(path, "/"))
+	req, err := http.NewRequest(method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("riot:"+c.tok)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return nil, &LcuError{0, err.Error()}
+	}
+	defer resp.Body.Close()
+	raw, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if resp.StatusCode >= 400 {
+		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		var dm map[string]any
+		if json.Unmarshal(raw, &dm) == nil {
+			if s, ok := dm["message"].(string); ok && s != "" {
+				msg = s
+			}
+		}
+		return raw, &LcuError{resp.StatusCode, msg}
+	}
+	return raw, nil
+}
+
+func (c *Client) getJSON(path string, out any) error {
+	raw, err := c.do("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// ---------------------------------------------------------------------------
+// Loot-Datenmodell
+// ---------------------------------------------------------------------------
+
+type LootItem struct {
+	LootID           string `json:"lootId"`
+	Count            int    `json:"count"`
+	Type             string `json:"type"`
+	ItemDesc         string `json:"itemDesc"`
+	LocalizedName    string `json:"localizedName"`
+	DisenchantValue  int    `json:"disenchantValue"`
+	DisenchantRecipe string `json:"disenchantRecipeName"`
+	TilePath         string `json:"tilePath"`
+	RedeemableStatus string `json:"redeemableStatus"`
+	Value            int    `json:"value"`
+}
+
+type lootSlot struct {
+	LootIDs  []string `json:"lootIds"`
+	Quantity int      `json:"quantity"`
+}
+
+type lcuRecipe struct {
+	RecipeName string     `json:"recipeName"`
+	Type       string     `json:"type"`
+	Slots      []lootSlot `json:"slots"`
+}
+
+type RecipeInfo struct {
+	Disenchant      string
+	Upgrade         string
+	UpgradeCost     int
+	UpgradeCurrency string
+}
+
+type championOwnership struct {
+	Owned bool `json:"owned"`
+}
+
+type championMinimal struct {
+	ID        int               `json:"id"`
+	Ownership championOwnership `json:"ownership"`
+}
+
+// ---------------------------------------------------------------------------
+// Service: Rezepte + besessene Champions (mit Caches)
+// ---------------------------------------------------------------------------
+
+type Service struct {
+	mu      sync.Mutex
+	client  *Client
+	recipes map[string]*RecipeInfo
+	owned   map[int]bool
+	ownedTS time.Time
+}
+
+func NewService(c *Client) *Service {
+	return &Service{client: c, recipes: map[string]*RecipeInfo{}}
+}
+
+func (s *Service) setClient(c *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.client = c
+	s.recipes = map[string]*RecipeInfo{}
+	s.owned = nil
+	s.ownedTS = time.Time{}
+}
+
+func (s *Service) recipesInfo(lootID string) *RecipeInfo {
+	s.mu.Lock()
+	if r, ok := s.recipes[lootID]; ok {
+		s.mu.Unlock()
+		return r
+	}
+	client := s.client
+	s.mu.Unlock()
+
+	var list []lcuRecipe
+	res := &RecipeInfo{}
+	if err := client.getJSON("/lol-loot/v1/recipes/initial-item/"+url.PathEscape(lootID), &list); err == nil {
+		for _, r := range list {
+			switch r.Type {
+			case "DISENCHANT":
+				res.Disenchant = r.RecipeName
+			case "UPGRADE":
+				res.Upgrade = r.RecipeName
+				for _, slot := range r.Slots {
+					for _, id := range slot.LootIDs {
+						if strings.HasPrefix(id, "CURRENCY_") {
+							res.UpgradeCost = slot.Quantity
+							res.UpgradeCurrency = id
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.recipes[lootID] = res
+	s.mu.Unlock()
+	return res
+}
+
+func (s *Service) ownedChampionIDs() map[int]bool {
+	s.mu.Lock()
+	if s.owned != nil && time.Since(s.ownedTS) < 60*time.Second {
+		defer s.mu.Unlock()
+		return s.owned
+	}
+	client := s.client
+	s.mu.Unlock()
+
+	var summoner struct {
+		SummonerID int64 `json:"summonerId"`
+	}
+	ids := map[int]bool{}
+	if err := client.getJSON("/lol-summoner/v1/current-summoner", &summoner); err == nil && summoner.SummonerID > 0 {
+		var champs []championMinimal
+		if err := client.getJSON(fmt.Sprintf("/lol-champions/v1/inventories/%d/champions-minimal", summoner.SummonerID), &champs); err == nil {
+			for _, ch := range champs {
+				if ch.Ownership.Owned {
+					ids[ch.ID] = true
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	s.owned = ids
+	s.ownedTS = time.Now()
+	s.mu.Unlock()
+	return ids
+}
+
+func championIDFromLoot(lootID string) (int, bool) {
+	i := strings.LastIndex(lootID, "_")
+	if i < 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(lootID[i+1:])
+	return n, err == nil
+}
+
+func pick(first, second string) string {
+	if first != "" {
+		return first
+	}
+	return second
+}
+
+func (s *Service) serialize(it LootItem, kind string, owned map[int]bool) map[string]any {
+	rec := s.recipesInfo(it.LootID)
+	count := it.Count
+	if count < 1 {
+		count = 1
+	}
+	name := it.ItemDesc
+	if name == "" {
+		name = it.LocalizedName
+	}
+	if name == "" {
+		name = it.LootID
+	}
+	var ownedFlag any
+	if kind == "champion" {
+		if id, ok := championIDFromLoot(it.LootID); ok {
+			ownedFlag = owned[id]
+		}
+	}
+	return map[string]any{
+		"lootId":           it.LootID,
+		"kind":             kind,
+		"name":             name,
+		"owned":            ownedFlag,
+		"count":            count,
+		"disenchantValue":  it.DisenchantValue,
+		"disenchantTotal":  it.DisenchantValue * count,
+		"recipeDisenchant": pick(it.DisenchantRecipe, rec.Disenchant),
+		"canUpgrade":       rec.Upgrade != "",
+		"recipeUpgrade":    rec.Upgrade,
+		"upgradeCurrency":  rec.UpgradeCurrency,
+		"upgradeCost":      rec.UpgradeCost,
+		"upgradeTotal":     rec.UpgradeCost * count,
+		"tile":             it.TilePath,
+		"status":           it.RedeemableStatus,
+		"value":            it.Value,
+	}
+}
+
+func (s *Service) summary() (map[string]any, error) {
+	client := s.client
+	var loot []LootItem
+	if err := client.getJSON("/lol-loot/v1/player-loot", &loot); err != nil {
+		return nil, err
+	}
+	cur := map[string]int64{}
+	for _, it := range loot {
+		if it.Type == "CURRENCY" {
+			cur[it.LootID] = int64(it.Count)
+		}
+	}
+	owned := s.ownedChampionIDs()
+	var champs, skins, wards []map[string]any
+	for _, it := range loot {
+		switch it.Type {
+		case "CHAMPION_RENTAL":
+			champs = append(champs, s.serialize(it, "champion", owned))
+		case "SKIN_RENTAL":
+			skins = append(skins, s.serialize(it, "skin", owned))
+		case "WARDSKIN_RENTAL":
+			wards = append(wards, s.serialize(it, "ward", owned))
+		}
+	}
+	sm := map[string]any{"gameName": "Spieler", "tagLine": "", "summonerLevel": 0}
+	var summoner struct {
+		GameName      string `json:"gameName"`
+		TagLine       string `json:"tagLine"`
+		SummonerLevel int    `json:"summonerLevel"`
+	}
+	if client.getJSON("/lol-summoner/v1/current-summoner", &summoner) == nil && summoner.GameName != "" {
+		sm = map[string]any{"gameName": summoner.GameName, "tagLine": summoner.TagLine, "summonerLevel": summoner.SummonerLevel}
+	}
+	return map[string]any{
+		"championShards": champs,
+		"skinShards":     skins,
+		"wardShards":     wards,
+		"essence":        map[string]int64{"blue": cur["CURRENCY_champion"], "orange": cur["CURRENCY_cosmetic"]},
+		"summoner":       sm,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Craft-Ausführung
+// ---------------------------------------------------------------------------
+
+type Action struct {
+	LootID string `json:"lootId"`
+	Name   string `json:"name"`
+	Action string `json:"action"`
+	Count  int    `json:"count"`
+}
+
+type CraftResult struct {
+	LootID  string `json:"lootId"`
+	Name    string `json:"name"`
+	Action  string `json:"action"`
+	Count   int    `json:"count"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+func findLoot(loot []LootItem, id string) *LootItem {
+	for i := range loot {
+		if loot[i].LootID == id {
+			return &loot[i]
+		}
+	}
+	return nil
+}
+
+func currencyPool(c *Client, currencyID string) (int64, bool) {
+	var loot []LootItem
+	if c.getJSON("/lol-loot/v1/player-loot", &loot) != nil {
+		return 0, false
+	}
+	for _, it := range loot {
+		if it.LootID == currencyID {
+			return int64(it.Count), true
+		}
+	}
+	return 0, false
+}
+
+func (a *App) performCrafts(actions []Action) []CraftResult {
+	var results []CraftResult
+	var loot []LootItem
+	a.lockList(&loot)
+	for _, ac := range actions {
+		r := CraftResult{LootID: ac.LootID, Name: ac.Name, Action: ac.Action, Count: ac.Count}
+		item := findLoot(loot, ac.LootID)
+		count := ac.Count
+		if count < 1 {
+			count = 1
+		}
+		if item == nil {
+			r.Message = "Loot nicht gefunden (möglicherweise bereits verbraucht)"
+			results = append(results, r)
+			continue
+		}
+		var recipe string
+		var currency string
+		if ac.Action == "disenchant" {
+			recipe = pick(item.DisenchantRecipe, a.service.recipesInfo(ac.LootID).Disenchant)
+			if recipe == "" {
+				r.Message = "Kein Entzauber-Rezept vorhanden"
+				results = append(results, r)
+				continue
+			}
+		} else {
+			rec := a.service.recipesInfo(ac.LootID)
+			recipe = rec.Upgrade
+			if recipe == "" {
+				r.Message = "Nicht aktivierbar (Champion/Skin bereits permanent?)"
+				results = append(results, r)
+				continue
+			}
+			currency = rec.UpgradeCurrency
+			if currency != "" {
+				need := rec.UpgradeCost * count
+				pool, ok := currencyPool(a.getClient(), currency)
+				if ok && pool < int64(need) {
+					r.Message = fmt.Sprintf("Zu wenig Essenz: braucht %d von %s/%d", need, currency, pool)
+					results = append(results, r)
+					continue
+				}
+			}
+		}
+		ok := true
+		for i := 0; i < count; i++ {
+			if err := a.craftOnce(recipe, ac.LootID, currency); err != nil {
+				ok = false
+				r.Message = err.Error()
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		tip := "entzaubert"
+		if ac.Action == "upgrade" {
+			tip = "aktiviert"
+		}
+		if ok {
+			r.Message = fmt.Sprintf("%d x %s erfolgreich %s", count, ac.Name, tip)
+		}
+		r.OK = ok
+		results = append(results, r)
+	}
+	return results
+}
+
+// ---------------------------------------------------------------------------
+// App / Web-Server
+// ---------------------------------------------------------------------------
+
+type imgEntry struct {
+	data  []byte
+	ctype string
+}
+
+type App struct {
+	mu      sync.Mutex
+	imgMu   sync.Mutex
+	client  *Client
+	service *Service
+	hub     *Hub
+	imgCache map[string]imgEntry
+	key     string
+	origins []string
+}
+
+func (a *App) getClient() *Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client == nil {
+		return nil
+	}
+	return a.client
+}
+
+func (a *App) getService() *Service {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.service
+}
+
+func (a *App) lockList(out *[]LootItem) bool {
+	c := a.getClient()
+	if c == nil {
+		return false
+	}
+	return c.getJSON("/lol-loot/v1/player-loot", out) == nil
+}
+
+func (a *App) craftOnce(recipe, lootID, currency string) error {
+	ids := []string{lootID}
+	if currency != "" {
+		ids = append(ids, currency)
+	}
+	c := a.getClient()
+	if c == nil {
+		return &LcuError{0, "keine LCU-Verbindung"}
+	}
+	_, err := c.do("POST", "/lol-loot/v1/recipes/"+url.PathEscape(recipe)+"/craft", ids)
+	if err != nil {
+		if le, ok := err.(*LcuError); ok && le.Status == 0 && a.refresh() {
+			c2 := a.getClient()
+			if _, err2 := c2.do("POST", "/lol-loot/v1/recipes/"+url.PathEscape(recipe)+"/craft", ids); err2 == nil {
+				return nil
+			}
+		}
+	}
+	return err
+}
+
+func (a *App) refresh() bool {
+	lf := findLockfile()
+	if lf == nil {
+		return false
+	}
+	c := NewClient(lf.Port, lf.Token)
+	if err := c.getJSON("/lol-summoner/v1/current-summoner", &map[string]any{}); err != nil {
+		return false
+	}
+	a.mu.Lock()
+	a.client = c
+	a.service.setClient(c)
+	a.mu.Unlock()
+	log.Printf("Reconnect: neuer LCU-Endpunkt (Port %d).", lf.Port)
+	return true
+}
+
+func (a *App) watchdog() {
+	for {
+		time.Sleep(3 * time.Second)
+		lf := findLockfile()
+		c := a.getClient()
+		if c != nil && lf != nil && lf.Port == c.Port() && lf.Token == c.Token() {
+			continue
+		}
+		if lf != nil {
+			a.refresh()
+		}
+	}
+}
+
+func (a *App) poller() {
+	var prev string
+	for {
+		time.Sleep(5 * time.Second)
+		var loot []LootItem
+		if !a.lockList(&loot) {
+			continue
+		}
+		parts := make([]string, 0, len(loot))
+		for _, it := range loot {
+			parts = append(parts, it.LootID+":"+strconv.Itoa(it.Count))
+		}
+		sort.Strings(parts)
+		sig := strings.Join(parts, "|")
+		if prev != "" && sig != prev {
+			a.hub.broadcast("loot")
+		}
+		prev = sig
+	}
+}
+
+// --- CORS / Sicherheit ---
+
+func (a *App) corsAndGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && !sameOrigin(r, origin) {
+			allow := false
+			for _, o := range a.origins {
+				if o == origin {
+					allow = true
+					break
+				}
+			}
+			if allow {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				if r.Method == http.MethodOptions {
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-UI-Key")
+					w.Header().Set("Access-Control-Max-Age", "600")
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			} else if a.key != "" && r.Header.Get("X-UI-Key") == a.key {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
+				http.Error(w, "Zugriff von diesem Ursprung abgelehnt.", http.StatusForbidden)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func sameOrigin(r *http.Request, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host != r.Host {
+		return false
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "localhost":
+		return true
+	}
+	return false
+}
+
+// --- SSE-Push ---
+
+type Hub struct {
+	mu   sync.Mutex
+	subs map[chan []byte]struct{}
+}
+
+func newHub() *Hub {
+	return &Hub{subs: map[chan []byte]struct{}{}}
+}
+
+func (h *Hub) add(c chan []byte)  { h.mu.Lock(); h.subs[c] = struct{}{}; h.mu.Unlock() }
+func (h *Hub) remove(c chan []byte) { h.mu.Lock(); delete(h.subs, c); h.mu.Unlock() }
+
+func (h *Hub) broadcast(name string) {
+	payload := []byte(fmt.Sprintf("id: %d\nevent: %s\ndata: 1\n\n", time.Now().UnixNano()/1e6, name))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.subs {
+		select {
+		case c <- payload:
+		default:
+		}
+	}
+}
+
+func (a *App) streamHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	ch := make(chan []byte, 8)
+	a.hub.add(ch)
+	defer a.hub.remove(ch)
+	tick := time.NewTicker(15 * time.Second)
+	defer tick.Stop()
+	w.Write([]byte(": hello\n\n"))
+	fl.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case m := <-ch:
+			w.Write(m)
+			fl.Flush()
+		case <-tick.C:
+			w.Write([]byte(": keepalive\n\n"))
+			fl.Flush()
+		}
+	}
+}
+
+// --- JSON-Handler ---
+
+func writeJSON(w http.ResponseWriter, obj any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(obj)
+}
+
+func (a *App) lootHandler(w http.ResponseWriter, r *http.Request) {
+	s := a.getService()
+	if s == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	summary, err := s.summary()
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	summary["ok"] = true
+	writeJSON(w, summary)
+}
+
+func (a *App) craftHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Actions []Action `json:"actions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "ungültiger Request"})
+		return
+	}
+	results := a.performCrafts(body.Actions)
+	writeJSON(w, map[string]any{"ok": true, "results": results})
+}
+
+func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query().Get("p")
+	if !strings.HasPrefix(p, "/lol-game-data/") {
+		writeJSON(w, map[string]any{"ok": false, "error": "invalid path"})
+		return
+	}
+	a.imgMu.Lock()
+	e, ok := a.imgCache[p]
+	a.imgMu.Unlock()
+	if !ok {
+		c := a.getClient()
+		if c == nil {
+			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
+			return
+		}
+		data, err := c.do("GET", p, nil)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
+			return
+		}
+		ctype := "image/jpeg"
+		if strings.HasSuffix(strings.ToLower(p), ".png") {
+			ctype = "image/png"
+		}
+		e = imgEntry{data: data, ctype: ctype}
+		a.imgMu.Lock()
+		if len(a.imgCache) > 400 {
+			a.imgCache = map[string]imgEntry{}
+		}
+		a.imgCache[p] = e
+		a.imgMu.Unlock()
+	}
+	w.Header().Set("Content-Type", e.ctype)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(e.data)
+}
+
+// --- Main ---
+
+func main() {
+	flagPort := flag.Int("port", 8700, "WebUI-Port (default 8700)")
+	flagKey := flag.String("key", "", "optionaler Zugangsschlüssel für entfernte Frontends")
+	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
+	flagNoBrowser := flag.Bool("no-browser", false, "Browser nicht automatisch öffnen")
+	flag.Parse()
+
+	lf := findLockfile()
+	if lf == nil {
+		log.Fatal("Keine Verbindung zum League-Client gefunden. LoL-Client starten und einloggen, dann erneut starten.")
+	}
+	client := NewClient(lf.Port, lf.Token)
+	if err := client.getJSON("/lol-summoner/v1/current-summoner", &map[string]any{}); err != nil {
+		log.Fatalf("LCU-Anfrage fehlgeschlagen (Port %d): %v", lf.Port, err)
+	}
+
+	service := NewService(client)
+	var origins []string
+	if *flagOrigins != "" {
+		for _, o := range strings.Split(*flagOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+	}
+	app := &App{
+		client:   client,
+		service:  service,
+		hub:      newHub(),
+		imgCache: map[string]imgEntry{},
+		key:      *flagKey,
+		origins:  origins,
+	}
+
+	go app.watchdog()
+	go app.poller()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			io.WriteString(w, pageHTML)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		io.WriteString(w, `{"ok":true,"bridge":"go"}`)
+	})
+	mux.HandleFunc("/api/loot", app.corsAndGuard(app.lootHandler))
+	mux.HandleFunc("/api/craft", app.corsAndGuard(app.craftHandler))
+	mux.HandleFunc("/api/img", app.corsAndGuard(app.imgHandler))
+	mux.HandleFunc("/api/stream", app.corsAndGuard(app.streamHandler))
+
+	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
+	srv := &http.Server{Addr: addr, Handler: mux}
+	log.Printf("Verbindung zum LoL-Client hergestellt (Port %d).", lf.Port)
+	log.Printf("WebUI läuft: http://%s/", addr)
+	if *flagKey != "" {
+		log.Printf("Entfernte Frontends müssen den X-UI-Key-Header senden.")
+	}
+	if !*flagNoBrowser {
+		go func() {
+			time.Sleep(400 * time.Millisecond)
+			openBrowser("http://" + addr + "/")
+		}()
+	}
+	log.Printf("Zum Beenden: Strg+C")
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+func openBrowser(url string) {
+	switch runtime.GOOS {
+	case "windows":
+		exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		exec.Command("open", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
+	}
+}
