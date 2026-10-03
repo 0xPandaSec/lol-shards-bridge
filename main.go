@@ -815,7 +815,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.7"
+const version = "1.1.8"
 
 var logFile *os.File
 var logPath string
@@ -979,23 +979,14 @@ func openBrowser(url string) {
 
 // printReady zeigt ein ASCII-Art-Banner, sobald die Bridge fertig ist.
 func printReady() {
-	art := `#============================================#
-#  ####.  ####.  #####  ####.  .####  #####  #
-#  #...#  #...#  ..#..  #...#  #....  #....  #
-#  ####.  ####.  ..#..  #...#  #.###  ####.  #
-#  #...#  #.#..  ..#..  #...#  #...#  #....  #
-#  ####.  #...#  #####  ####.  .###.  #####  #
-#                                            #
-#                                            #
-#  ####.  #####  .##..  ####.  #...#         #
-#  #...#  #....  #..#.  #...#  #...#         #
-#  ####.  ####.  #####  #...#  .#.#.         #
-#  #.#..  #....  #..#.  #...#  ..#..         #
-#  #...#  #####  #..#.  ####.  ..#..         #
-#============================================#`
+	art := `    ____  ____  ________  ____________   ____  _________    ______  __
+   / __ )/ __ \/  _/ __ \/ ____/ ____/  / __ \/ ____/   |  / __ \ \/ /
+  / __  / /_/ // // / / / / __/ __/    / /_/ / __/ / /| | / / / /\  /
+ / /_/ / _, _// // /_/ / /_/ / /___   / _, _/ /___/ ___ |/ /_/ / / /
+/_____/_/ |_/___/_____/\____/_____/  /_/ |_/_____/_/  |_/_____/ /_/`
 	for _, l := range strings.Split(art, "\n") {
 		say(l)
 	}
 	say("")
-	say("Bridge ist bereit – WebUI wird geöffnet: " + webUIURL)
+	say("LoL-Shard-Bridge v" + version + " · BEREIT – WebUI wird geöffnet: " + webUIURL)
 }
