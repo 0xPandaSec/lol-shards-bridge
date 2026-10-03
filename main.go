@@ -814,11 +814,6 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 // mit der WebUI unter https://lolshards.pandasec.de zusammenarbeitet.
 const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 
-// testAllowedOrigin erlaubt zusätzlich den Zugriff über die reine IP,
-// damit die Seite auch ohne (bzw. vor ausgereifter) DNS-Auflösung getestet
-// werden kann (Caddy-Duplikat http://217.160.49.55).
-const testAllowedOrigin = "http://217.160.49.55"
-
 // webUIURL wird nach dem Start automatisch im Standardbrowser geöffnet.
 const webUIURL = "https://lolshards.pandasec.de"
 
@@ -900,7 +895,7 @@ func main() {
 	say("Verbunden mit dem LoL-Client (Port", client.Port(), ").")
 
 	service := NewService(client)
-	origins := []string{defaultAllowedOrigin, testAllowedOrigin}
+	origins := []string{defaultAllowedOrigin}
 	if *flagOrigins != "" {
 		for _, o := range strings.Split(*flagOrigins, ",") {
 			if o = strings.TrimSpace(o); o != "" {
