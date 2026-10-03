@@ -815,7 +815,7 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 const webUIURL = "https://lolshards.pandasec.de"
 
 // version wird beim Start angezeigt und in bridge.log geschrieben.
-const version = "1.1.8"
+const version = "1.1.9"
 
 var logFile *os.File
 var logPath string
@@ -842,6 +842,7 @@ func sayf(format string, args ...any) {
 }
 
 func main() {
+	enableUTF8Console()
 	openLog()
 	say("LoL-Shard-Bridge v" + version)
 	if logFile != nil {
@@ -979,11 +980,23 @@ func openBrowser(url string) {
 
 // printReady zeigt ein ASCII-Art-Banner, sobald die Bridge fertig ist.
 func printReady() {
-	art := `    ____  ____  ________  ____________   ____  _________    ______  __
-   / __ )/ __ \/  _/ __ \/ ____/ ____/  / __ \/ ____/   |  / __ \ \/ /
-  / __  / /_/ // // / / / / __/ __/    / /_/ / __/ / /| | / / / /\  /
- / /_/ / _, _// // /_/ / /_/ / /___   / _, _/ /___/ ___ |/ /_/ / / /
-/_____/_/ |_/___/_____/\____/_____/  /_/ |_/_____/_/  |_/_____/ /_/`
+	art := `+==============================================+
+|                                              |
+| ██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗ |
+| ██╔══██╗██╔══██╗██║██╔══██╗██╔════╝ ██╔════╝ |
+| ██████╔╝██████╔╝██║██║  ██║██║  ███╗█████╗   |
+| ██╔══██╗██╔══██╗██║██║  ██║██║   ██║██╔══╝   |
+| ██████╔╝██║  ██║██║██████╔╝╚██████╔╝███████╗ |
+| ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝ |
+|                                              |
+| ██████╗ ███████╗ █████╗ ██████╗ ██╗   ██╗    |
+| ██╔══██╗██╔════╝██╔══██╗██╔══██╗╚██╗ ██╔╝    |
+| ██████╔╝█████╗  ███████║██║  ██║ ╚████╔╝     |
+| ██╔══██╗██╔══╝  ██╔══██║██║  ██║  ╚██╔╝      |
+| ██║  ██║███████╗██║  ██║██████╔╝   ██║       |
+| ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝    ╚═╝       |
+|                                              |
++==============================================+`
 	for _, l := range strings.Split(art, "\n") {
 		say(l)
 	}
