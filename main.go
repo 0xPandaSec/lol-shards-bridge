@@ -816,7 +816,32 @@ const defaultAllowedOrigin = "https://lolshards.pandasec.de"
 // webUIURL wird nach dem Start automatisch im Standardbrowser geöffnet.
 const webUIURL = "https://lolshards.pandasec.de"
 
+// version wird beim Start angezeigt und in bridge.log geschrieben.
+const version = "1.1.2"
+
+var logFile *os.File
+
+func openLog() {
+	if f, err := os.OpenFile("bridge.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		logFile = f
+	}
+}
+
+func say(args ...any) {
+	fmt.Println(args...)
+	if logFile != nil {
+		fmt.Fprintln(logFile, args...)
+	}
+}
+
+func sayf(format string, args ...any) {
+	say(fmt.Sprintf(format, args...))
+}
+
 func main() {
+	openLog()
+	say("LoL-Shard-Bridge v" + version)
+	say("Log wird mitgeschrieben: bridge.log")
 	flagPort := flag.Int("port", 8700, "WebUI-Port (default 8700)")
 	flagKey := flag.String("key", "", "optionaler Zugangsschlüssel für entfernte Frontends")
 	flagOrigins := flag.String("allow-origin", "", "kommagetrennte erlaubte Ursprünge (z. B. https://meinseite.de)")
@@ -826,9 +851,7 @@ func main() {
 
 	// Auf den League-Client warten (Doppelklick-freundlich): kein sofortiger
 	// Abbruch, sondern Meldung + erneuter Versuch, bis LoL läuft und eingeloggt ist.
-	fmt.Println("LoL-Shard-Bridge")
-	fmt.Println("-----------------")
-	fmt.Println("Suche League-Client ... bitte warten.")
+	say("Suche League-Client ... bitte warten.")
 	var client *Client
 	startWait := time.Now()
 	for attempt := 1; ; attempt++ {
@@ -841,20 +864,20 @@ func main() {
 		}
 		if attempt%10 == 0 {
 			ellapsed := int(time.Since(startWait).Seconds())
-			fmt.Printf("Client noch nicht bereit (%ds) – ist LoL gestartet und eingeloggt?\n", ellapsed)
+			sayf("Client noch nicht bereit (%ds) – ist LoL gestartet und eingeloggt?", ellapsed)
 		}
 		if time.Since(startWait) > 120*time.Second {
-			fmt.Println()
-			fmt.Println("Kein League-Client gefunden.")
-			fmt.Println("Starte zuerst League of Legends und logge dich ein,")
-			fmt.Println("danach bridge.exe noch einmal starten.")
-			fmt.Println("Das Fenster schließt sich in 10 Sekunden.")
+			say("")
+			say("Kein League-Client gefunden.")
+			say("Starte zuerst League of Legends und logge dich ein,")
+			say("danach bridge.exe noch einmal starten.")
+			say("Das Fenster schließt sich in 10 Sekunden.")
 			time.Sleep(10 * time.Second)
 			os.Exit(1)
 		}
 		time.Sleep(time.Second)
 	}
-	fmt.Println("Verbunden mit dem LoL-Client (Port", client.Port(), ").")
+	say("Verbunden mit dem LoL-Client (Port", client.Port(), ").")
 
 	service := NewService(client)
 	origins := []string{defaultAllowedOrigin}
