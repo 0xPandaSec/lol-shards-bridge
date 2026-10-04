@@ -1020,6 +1020,65 @@ func (a *App) collectionsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+func (a *App) playHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	var body struct {
+		Queue int `json:"queue"`
+	}
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.Queue == 0 {
+		body.Queue = 430
+	}
+	var phase string
+	if c.getJSON("/lol-gameflow/v1/gameflow-phase", &phase) != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "Gameflow nicht verfügbar"})
+		return
+	}
+	switch phase {
+	case "Matchmaking":
+		writeJSON(w, map[string]any{"ok": true, "searching": true, "phase": phase})
+		return
+	case "None":
+		if _, err := c.do("POST", "/lol-lobby/v2/lobby", map[string]any{"queueId": body.Queue}); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": "Lobby: " + err.Error()})
+			return
+		}
+	case "Lobby":
+		// Lobby existiert bereits – Queue ggf. neu setzen
+		if _, err := c.do("PUT", "/lol-lobby/v2/lobby", map[string]any{"queueId": body.Queue}); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": "Lobby-Queue: " + err.Error()})
+			return
+		}
+	default:
+		writeJSON(w, map[string]any{"ok": false, "error": fmt.Sprintf("Nicht startbar in Phase %q", phase)})
+		return
+	}
+	if _, err := c.do("POST", "/lol-lobby/v2/lobby/matchmaking/search", nil); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "Suche: " + err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "searching": true, "phase": phase})
+}
+
+func (a *App) cancelHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	var phase string
+	if c.getJSON("/lol-gameflow/v1/gameflow-phase", &phase) == nil && phase == "Matchmaking" {
+		c.do("DELETE", "/lol-lobby/v2/lobby/matchmaking/search", nil)
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // --- Main ---
 
 // defaultAllowedOrigin ist die offizielle WebUI-Adresse. Sie ist
@@ -1148,6 +1207,8 @@ func main() {
 	mux.HandleFunc("/api/stream", app.corsAndGuard(app.streamHandler))
 	mux.HandleFunc("/api/client", app.corsAndGuard(app.clientHandler))
 	mux.HandleFunc("/api/collections", app.corsAndGuard(app.collectionsHandler))
+	mux.HandleFunc("/api/play", app.corsAndGuard(app.playHandler))
+	mux.HandleFunc("/api/cancel", app.corsAndGuard(app.cancelHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
 	ln, err := net.Listen("tcp", addr)
