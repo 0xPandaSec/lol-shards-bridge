@@ -1089,6 +1089,37 @@ func (a *App) cancelHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// debugRaw gibt die Roh-Antwort eines LCU-Endpunkts zurück (nur für Fehlersuche).
+func (a *App) debugRaw(w http.ResponseWriter, r *http.Request, path string) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	raw, err := c.do("GET", path, nil)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
+}
+
+func (a *App) debugFriendsHandler(w http.ResponseWriter, r *http.Request)    { a.debugRaw(w, r, "/lol-chat/v1/friends") }
+func (a *App) debugHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	sid := int64(0)
+	c := a.getClient()
+	if c != nil {
+		var sm struct {
+			SummonerID int64 `json:"summonerId"`
+		}
+		if c.getJSON("/lol-summoner/v1/current-summoner", &sm) == nil {
+			sid = sm.SummonerID
+		}
+	}
+	a.debugRaw(w, r, fmt.Sprintf("/lol-match-history/v1/products/lol/%d/matches?begIndex=0&endIndex=5", sid))
+}
+
 // --- Main ---
 
 // defaultAllowedOrigin ist die offizielle WebUI-Adresse. Sie ist
@@ -1219,6 +1250,8 @@ func main() {
 	mux.HandleFunc("/api/collections", app.corsAndGuard(app.collectionsHandler))
 	mux.HandleFunc("/api/play", app.corsAndGuard(app.playHandler))
 	mux.HandleFunc("/api/cancel", app.corsAndGuard(app.cancelHandler))
+	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
+	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
 	ln, err := net.Listen("tcp", addr)
