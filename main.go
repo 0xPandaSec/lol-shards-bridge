@@ -887,6 +887,54 @@ func firstWorkingHistoryPath(c *Client) (string, bool) {
 	return "", false
 }
 
+type lcuQueue struct {
+	ID                int      `json:"id"`
+	Name              string   `json:"name"`
+	Description       string   `json:"description"`
+	GameMode          string   `json:"gameMode"`
+	QueueAvailability []string `json:"queueAvailability"`
+	Type              string   `json:"type"`
+}
+
+// playableQueues liefert die im Launcher auswählbaren Warteschlangen (keine
+// Custom- und keine TFT-Games) samt id→Name-Mapping für die Match-History.
+func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
+	var all []lcuQueue
+	names := map[int]string{}
+	if c.getJSON("/lol-game-queues/v1/queues", &all) != nil {
+		return nil, names
+	}
+	enabled := func(q lcuQueue) bool {
+		if len(q.QueueAvailability) == 0 {
+			return true
+		}
+		for _, s := range q.QueueAvailability {
+			if s == "Enabled" || s == "Available" {
+				return true
+			}
+		}
+		return false
+	}
+	seen := map[int]bool{}
+	out := []map[string]any{}
+	for _, q := range all {
+		names[q.ID] = q.Name
+		if q.ID == 0 || q.Name == "" || !enabled(q) {
+			continue
+		}
+		if q.Type == "CUSTOM_GAME" || q.GameMode == "TFT" || q.GameMode == "PRACTICETOOL" {
+			continue
+		}
+		if seen[q.ID] {
+			continue
+		}
+		seen[q.ID] = true
+		out = append(out, map[string]any{"id": q.ID, "name": q.Name, "gameMode": q.GameMode})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i]["name"].(string) < out[j]["name"].(string) })
+	return out, names
+}
+
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 	c := a.getClient()
 	if c == nil {
@@ -897,6 +945,11 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 	sm := a.summonerInfo(c)
 	out["summoner"] = sm
 	sid, _ := sm["id"].(int64)
+
+	queues, qnames := a.playableQueues(c)
+	if len(queues) > 0 {
+		out["queues"] = queues
+	}
 
 	var phase string
 	if c.getJSON("/lol-gameflow/v1/gameflow-phase", &phase) == nil {
@@ -932,6 +985,7 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 					GameID  int64  `json:"gameId"`
 					Created int64  `json:"gameCreation"`
 					Mode    string `json:"gameMode"`
+					QueueID int    `json:"queueId"`
 					Parts   []struct {
 						SummonerID int64  `json:"summonerId"`
 						Puuid      string `json:"puuid"`
@@ -950,7 +1004,7 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 		if c.getJSON(hp+"/matches?begIndex=0&endIndex=5", &hist) == nil {
 			puuid, _ := sm["puuid"].(string)
 			for _, g := range hist.Games.Games {
-				row := map[string]any{"mode": g.Mode, "created": g.Created}
+				row := map[string]any{"mode": g.Mode, "created": g.Created, "qid": g.QueueID, "qname": qnames[g.QueueID]}
 				first := -1
 				for i, p := range g.Parts {
 					if p.SummonerID == sid || (puuid != "" && p.Puuid == puuid) {
