@@ -941,7 +941,7 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 							Kills   int   `json:"kills"`
 							Deaths  int   `json:"deaths"`
 							Assists int   `json:"assists"`
-							CS      int   `json:"cs"`
+							CS      int   `json:"totalMinionsKilled"`
 						} `json:"stats"`
 					} `json:"participants"`
 				} `json:"games"`
