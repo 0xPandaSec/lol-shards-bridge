@@ -1050,10 +1050,20 @@ func (a *App) playHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "Lobby":
-		// Lobby existiert bereits – Queue ggf. neu setzen
-		if _, err := c.do("PUT", "/lol-lobby/v2/lobby", map[string]any{"queueId": body.Queue}); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "error": "Lobby-Queue: " + err.Error()})
-			return
+		// Bestehende Lobby prüfen: Queue identisch? Dann direkt nutzen,
+		// sonst Lobby verlassen und mit gewünschter Queue neu anlegen.
+		var cur struct {
+			GameConfig struct {
+				QueueID int `json:"queueId"`
+			} `json:"gameConfig"`
+		}
+		sameQueue := c.getJSON("/lol-lobby/v2/lobby", &cur) == nil && cur.GameConfig.QueueID == body.Queue
+		if !sameQueue {
+			c.do("DELETE", "/lol-lobby/v2/lobby", nil)
+			if _, err := c.do("POST", "/lol-lobby/v2/lobby", map[string]any{"queueId": body.Queue}); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "error": "Lobby: " + err.Error()})
+				return
+			}
 		}
 	default:
 		writeJSON(w, map[string]any{"ok": false, "error": fmt.Sprintf("Nicht startbar in Phase %q", phase)})
