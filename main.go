@@ -850,14 +850,14 @@ func historyID(c *Client) (id string, puuidMode bool) {
 	if c.getJSON("/lol-summoner/v1/current-summoner", &sm) != nil {
 		return "", false
 	}
+	if sm.PUUID != "" {
+		return sm.PUUID, true
+	}
 	if sm.AccountID != 0 {
 		return strconv.FormatInt(sm.AccountID, 10), false
 	}
 	if sm.SummonerID != 0 {
 		return strconv.FormatInt(sm.SummonerID, 10), false
-	}
-	if sm.PUUID != "" {
-		return sm.PUUID, true
 	}
 	return "", false
 }
