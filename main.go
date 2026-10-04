@@ -914,6 +914,69 @@ type lcuQueue struct {
 	Type              string   `json:"type"`
 }
 
+// queueLabel liefert einen lesbaren Namen: vorzugsweise die LCU-Namenszeile,
+// bei leeren Namen einen Ableitung aus gameMode/type.
+func queueLabel(q lcuQueue) string {
+	if q.Name != "" {
+		return q.Name
+	}
+	switch strings.ToLower(q.GameMode) {
+	case "jade":
+		if strings.Contains(strings.ToUpper(q.Type), "RANKED") {
+			return "Solo/Duo (Rangliste)"
+		}
+		return "Kluft"
+	case "kiwi", "kiwi_jade":
+		return "ARAM: Chaos"
+	case "aram":
+		return "ARAM"
+	case "classic":
+		return "Normal"
+	case "swiftplay":
+		return "Swiftplay"
+	case "cherry":
+		return "Arena"
+	}
+	switch strings.ToUpper(q.Type) {
+	case "RANKED_SOLO_5X5", "JADE_RANKED_SOLO_5X5":
+		return "Solo/Duo (Rangliste)"
+	case "RANKED_FLEX_SR":
+		return "Flexi (Rangliste)"
+	case "RANKED_PREMADE_5X5":
+		return "5er-Rangliste"
+	case "ARAM_UNRANKED_5X5":
+		return "ARAM"
+	case "NORMAL":
+		return "Normal"
+	case "URF":
+		return "U.R.F."
+	case "URF_CLASH":
+		return "U.R.F. Clash"
+	case "ARAM_CLASH":
+		return "Clash (ARAM)"
+	case "CLASH":
+		return "Clash"
+	case "CHERRY":
+		return "Arena"
+	case "BOT":
+		return "Bots"
+	case "RIOTSCRIPT_BOT":
+		return "Bots"
+	case "TUTORIAL_MODULE_1", "TUTORIAL_MODULE_2", "TUTORIAL_MODULE_3":
+		return "Einführung"
+	case "BRAWL":
+		return "Rauferei"
+	case "ONEFORALL":
+		return "Einer für Alle"
+	case "ULTBOOK":
+		return "Ultimatives Zauberbuch"
+	}
+	if q.Type != "" {
+		return q.Type
+	}
+	return fmt.Sprintf("#%d", q.ID)
+}
+
 // playableQueues liefert die im Launcher auswählbaren Warteschlangen (keine
 // Custom- und keine TFT-Games) samt id→Name-Mapping für die Match-History.
 func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
@@ -936,21 +999,25 @@ func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
 	seen := map[int]bool{}
 	out := []map[string]any{}
 	for _, q := range all {
-		names[q.ID] = q.Name
-		if q.ID == 0 || q.Name == "" || !enabled(q) {
+		names[q.ID] = queueLabel(q)
+		if q.ID == 0 || !enabled(q) {
 			continue
 		}
-		if q.Type == "CUSTOM_GAME" || q.GameMode == "TFT" || q.GameMode == "PRACTICETOOL" {
+		if q.Type == "CUSTOM_GAME" || strings.HasPrefix(q.Type, "TUTORIAL") || isTFTQueue(q) {
 			continue
 		}
 		if seen[q.ID] {
 			continue
 		}
 		seen[q.ID] = true
-		out = append(out, map[string]any{"id": q.ID, "name": q.Name, "gameMode": q.GameMode})
+		out = append(out, map[string]any{"id": q.ID, "name": queueLabel(q), "gameMode": q.GameMode})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["name"].(string) < out[j]["name"].(string) })
 	return out, names
+}
+
+func isTFTQueue(q lcuQueue) bool {
+	return strings.Contains(strings.ToUpper(q.Type), "TFT") || q.GameMode == "TFT"
 }
 
 func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
