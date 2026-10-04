@@ -820,6 +820,8 @@ type collectionOwnership struct {
 func (a *App) summonerInfo(c *Client) map[string]any {
 	var sm struct {
 		SummonerID int64  `json:"summonerId"`
+		AccountID  int64  `json:"accountId"`
+		PUUID      string `json:"puuid"`
 		GameName   string `json:"gameName"`
 		TagLine    string `json:"tagLine"`
 		Level      int    `json:"summonerLevel"`
@@ -828,12 +830,47 @@ func (a *App) summonerInfo(c *Client) map[string]any {
 	out := map[string]any{}
 	if c.getJSON("/lol-summoner/v1/current-summoner", &sm) == nil {
 		out = map[string]any{
-			"id": sm.SummonerID, "name": sm.GameName, "tag": sm.TagLine,
+			"id": sm.SummonerID, "accountId": sm.AccountID, "puuid": sm.PUUID,
+			"name": sm.GameName, "tag": sm.TagLine,
 			"level": sm.Level, "icon": sm.Icon,
 			"iconPath": fmt.Sprintf("/lol-game-data/assets/v1/profile-icons/%d.jpg", sm.Icon),
 		}
 	}
 	return out
+}
+
+// historyID liefert die beste Kennung für den Match-History-Endpunkt.
+// Riot verlangt je nach Client-Version accountId, summonerId oder puuid.
+func historyID(c *Client) (id string, puuidMode bool) {
+	var sm struct {
+		SummonerID int64  `json:"summonerId"`
+		AccountID  int64  `json:"accountId"`
+		PUUID      string `json:"puuid"`
+	}
+	if c.getJSON("/lol-summoner/v1/current-summoner", &sm) != nil {
+		return "", false
+	}
+	if sm.AccountID != 0 {
+		return strconv.FormatInt(sm.AccountID, 10), false
+	}
+	if sm.SummonerID != 0 {
+		return strconv.FormatInt(sm.SummonerID, 10), false
+	}
+	if sm.PUUID != "" {
+		return sm.PUUID, true
+	}
+	return "", false
+}
+
+func historyBasePath(c *Client) string {
+	id, puu := historyID(c)
+	if id == "" {
+		return ""
+	}
+	if puu {
+		return "/lol-match-history/v1/products/lol/puuid/" + id
+	}
+	return "/lol-match-history/v1/products/lol/" + id
 }
 
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
@@ -874,7 +911,7 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Match-History (letzte 5)
 	history := []map[string]any{}
-	if sid != 0 {
+	if hp := historyBasePath(c); hp != "" {
 		var hist struct {
 			Games struct {
 				Games []struct {
@@ -882,8 +919,9 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 					Created int64  `json:"gameCreation"`
 					Mode    string `json:"gameMode"`
 					Parts   []struct {
-						SummonerID int64 `json:"summonerId"`
-						ChampionID int   `json:"championId"`
+						SummonerID int64  `json:"summonerId"`
+						Puuid      string `json:"puuid"`
+						ChampionID int    `json:"championId"`
 						Stats      struct {
 							Win     bool  `json:"win"`
 							Kills   int   `json:"kills"`
@@ -895,12 +933,13 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 				} `json:"games"`
 			} `json:"games"`
 		}
-		if c.getJSON(fmt.Sprintf("/lol-match-history/v1/products/lol/%d/matches?begIndex=0&endIndex=5", sid), &hist) == nil {
+		if c.getJSON(hp+"/matches?begIndex=0&endIndex=5", &hist) == nil {
+			puuid, _ := sm["puuid"].(string)
 			for _, g := range hist.Games.Games {
 				row := map[string]any{"mode": g.Mode, "created": g.Created}
 				first := -1
 				for i, p := range g.Parts {
-					if p.SummonerID == sid {
+					if p.SummonerID == sid || (puuid != "" && p.Puuid == puuid) {
 						first = i
 						break
 					}
@@ -927,11 +966,12 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	out["history"] = history
 
-	// Freunde (erste 30, readonly)
+	// Freunde (erste 30, readonly) – Name liegt in gameName/gameTag, nicht name.
 	var friends []struct {
-		Name  string `json:"name"`
-		Avail string `json:"availability"`
-		Note  string `json:"statusMessage"`
+		GameName string `json:"gameName"`
+		GameTag  string `json:"gameTag"`
+		Avail    string `json:"availability"`
+		Note     string `json:"statusMessage"`
 	}
 	if c.getJSON("/lol-chat/v1/friends", &friends) == nil {
 		fs := []map[string]any{}
@@ -939,7 +979,14 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 			if len(fs) >= 30 {
 				break
 			}
-			fs = append(fs, map[string]any{"name": f.Name, "avail": f.Avail, "note": f.Note})
+			nm := f.GameName
+			if f.GameName == "" {
+				nm = "?"
+			}
+			if f.GameTag != "" {
+				nm += " #" + f.GameTag
+			}
+			fs = append(fs, map[string]any{"name": nm, "avail": f.Avail, "note": f.Note})
 		}
 		out["friends"] = fs
 	}
@@ -1090,34 +1137,36 @@ func (a *App) cancelHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // debugRaw gibt die Roh-Antwort eines LCU-Endpunkts zurück (nur für Fehlersuche).
-func (a *App) debugRaw(w http.ResponseWriter, r *http.Request, path string) {
+func (a *App) debugRaw(w http.ResponseWriter, r *http.Request, path string) bool {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return false
+	}
+	raw, err := c.do("GET", path, nil)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
+	return true
+}
+
+func (a *App) debugFriendsHandler(w http.ResponseWriter, r *http.Request)  { a.debugRaw(w, r, "/lol-chat/v1/friends") }
+func (a *App) debugSummonerHandler(w http.ResponseWriter, r *http.Request) { a.debugRaw(w, r, "/lol-summoner/v1/current-summoner") }
+func (a *App) debugHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	c := a.getClient()
 	if c == nil {
 		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
 		return
 	}
-	raw, err := c.do("GET", path, nil)
-	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+	hp := historyBasePath(c)
+	if hp == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "kein Summoner-Identifier gefunden"})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write(raw)
-}
-
-func (a *App) debugFriendsHandler(w http.ResponseWriter, r *http.Request)    { a.debugRaw(w, r, "/lol-chat/v1/friends") }
-func (a *App) debugHistoryHandler(w http.ResponseWriter, r *http.Request) {
-	sid := int64(0)
-	c := a.getClient()
-	if c != nil {
-		var sm struct {
-			SummonerID int64 `json:"summonerId"`
-		}
-		if c.getJSON("/lol-summoner/v1/current-summoner", &sm) == nil {
-			sid = sm.SummonerID
-		}
-	}
-	a.debugRaw(w, r, fmt.Sprintf("/lol-match-history/v1/products/lol/%d/matches?begIndex=0&endIndex=5", sid))
+	a.debugRaw(w, r, hp+"/matches?begIndex=0&endIndex=5")
 }
 
 // --- Main ---
@@ -1251,6 +1300,7 @@ func main() {
 	mux.HandleFunc("/api/play", app.corsAndGuard(app.playHandler))
 	mux.HandleFunc("/api/cancel", app.corsAndGuard(app.cancelHandler))
 	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
+	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
 	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
