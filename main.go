@@ -887,12 +887,30 @@ func firstWorkingHistoryPath(c *Client) (string, bool) {
 	return "", false
 }
 
+// strSlice dekodiert Werte, die je nach Client-Version als String ODER
+// als JSON-Array geliefert werden (z.B. queueAvailability).
+type strSlice []string
+
+func (s *strSlice) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*s = []string{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return err
+	}
+	*s = many
+	return nil
+}
+
 type lcuQueue struct {
 	ID                int      `json:"id"`
 	Name              string   `json:"name"`
 	Description       string   `json:"description"`
 	GameMode          string   `json:"gameMode"`
-	QueueAvailability []string `json:"queueAvailability"`
+	QueueAvailability strSlice `json:"queueAvailability"`
 	Type              string   `json:"type"`
 }
 
