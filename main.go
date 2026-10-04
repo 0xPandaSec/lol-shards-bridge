@@ -1003,7 +1003,12 @@ func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
 		if q.ID == 0 || !enabled(q) {
 			continue
 		}
-		if q.Type == "CUSTOM_GAME" || strings.HasPrefix(q.Type, "TUTORIAL") || isTFTQueue(q) {
+		ut := strings.ToUpper(q.Type)
+		if ut == "CUSTOM_GAME" || strings.HasPrefix(ut, "TUTORIAL") || isTFTQueue(q) {
+			continue
+		}
+		// Queues, die ein Solo-Spieler nicht starten kann:
+		if ut == "RANKED_PREMADE_5X5" || strings.Contains(ut, "CLASH") {
 			continue
 		}
 		if seen[q.ID] {
@@ -1298,10 +1303,29 @@ func (a *App) playHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := c.do("POST", "/lol-lobby/v2/lobby/matchmaking/search", nil); err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": "Suche: " + err.Error()})
+		writeJSON(w, map[string]any{"ok": false, "error": "Suche: " + searchErrHint(err.Error(), c)})
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "searching": true, "phase": phase})
+}
+
+// searchErrHint macht GATEKEEPER-Restrictions verständlicher.
+func searchErrHint(msg string, c *Client) string {
+	hint := msg
+	if strings.Contains(msg, "GATEKEEPER_RESTRICTED") || strings.Contains(msg, "GATEKEEPER") {
+		hint = "Warteschlange gesperrt – Voraussetzungen nicht erfüllt (Level, Honor-Grad, Rang, Squad-Größe oder Warteschlangen-Aktivierung)."
+	}
+	var es []struct {
+		ErrorType string `json:"errorType"`
+		MessageID string `json:"messageId"`
+	}
+	if c.getJSON("/lol-matchmaking/v1/search/errors", &es) == nil {
+		if len(es) > 0 {
+			extra := es[len(es)-1].MessageID
+			hint += " (" + extra + ")"
+		}
+	}
+	return hint
 }
 
 func (a *App) cancelHandler(w http.ResponseWriter, r *http.Request) {
