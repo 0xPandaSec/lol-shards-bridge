@@ -839,38 +839,52 @@ func (a *App) summonerInfo(c *Client) map[string]any {
 	return out
 }
 
-// historyID liefert die beste Kennung für den Match-History-Endpunkt.
-// Riot verlangt je nach Client-Version accountId, summonerId oder puuid.
-func historyID(c *Client) (id string, puuidMode bool) {
+// HistoryPfad-Kandidaten: Je nach Client-Version akzeptiert der
+// Match-History-Plugin accountId (RID), dessen lower-32-Bits (legacy)
+// oder puuid als Routensegment. Wir probieren in dieser Reihenfolge.
+func matchHistoryCandidates(c *Client) []string {
 	var sm struct {
 		SummonerID int64  `json:"summonerId"`
 		AccountID  int64  `json:"accountId"`
 		PUUID      string `json:"puuid"`
 	}
 	if c.getJSON("/lol-summoner/v1/current-summoner", &sm) != nil {
-		return "", false
+		return nil
+	}
+	var ids []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	add(strconv.FormatInt(sm.AccountID, 10))
+	add(strconv.FormatInt(sm.SummonerID, 10))
+	if sm.SummonerID != 0 {
+		add(strconv.FormatInt(sm.SummonerID&0xFFFFFFFF, 10))
 	}
 	if sm.PUUID != "" {
-		return sm.PUUID, true
+		ids = append(ids, "puuid/"+sm.PUUID)
+		add(sm.PUUID)
 	}
-	if sm.AccountID != 0 {
-		return strconv.FormatInt(sm.AccountID, 10), false
+	var paths []string
+	for _, id := range ids {
+		paths = append(paths, "/lol-match-history/v1/products/lol/"+id)
 	}
-	if sm.SummonerID != 0 {
-		return strconv.FormatInt(sm.SummonerID, 10), false
-	}
-	return "", false
+	return paths
 }
 
-func historyBasePath(c *Client) string {
-	id, puu := historyID(c)
-	if id == "" {
-		return ""
+// firstWorkingHistoryPath liefert die Basis-URL, unter der der Match-History-Endpunkt
+// echte Spieledaten liefert (HTTP 200, kein Plugin-Fehler).
+func firstWorkingHistoryPath(c *Client) (string, bool) {
+	for _, base := range matchHistoryCandidates(c) {
+		raw, err := c.do("GET", base+"/matches?begIndex=0&endIndex=5", nil)
+		if err == nil && !bytes.Contains(raw, []byte("could not find summoner info")) {
+			return base, true
+		}
 	}
-	if puu {
-		return "/lol-match-history/v1/products/lol/puuid/" + id
-	}
-	return "/lol-match-history/v1/products/lol/" + id
+	return "", false
 }
 
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
@@ -911,7 +925,7 @@ func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Match-History (letzte 5)
 	history := []map[string]any{}
-	if hp := historyBasePath(c); hp != "" {
+	if hp, okHP := firstWorkingHistoryPath(c); okHP {
 		var hist struct {
 			Games struct {
 				Games []struct {
@@ -1161,12 +1175,21 @@ func (a *App) debugHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
 		return
 	}
-	hp := historyBasePath(c)
-	if hp == "" {
-		writeJSON(w, map[string]any{"ok": false, "error": "kein Summoner-Identifier gefunden"})
+	if hp, ok := firstWorkingHistoryPath(c); ok {
+		a.debugRaw(w, r, hp+"/matches?begIndex=0&endIndex=5")
 		return
 	}
-	a.debugRaw(w, r, hp+"/matches?begIndex=0&endIndex=5")
+	cands := matchHistoryCandidates(c)
+	results := map[string]string{}
+	for _, base := range cands {
+		_, err := c.do("GET", base+"/matches?begIndex=0&endIndex=5", nil)
+		if err != nil {
+			results[base] = err.Error()
+		} else {
+			results[base] = "HTTP 200, aber leer/keine Spiele"
+		}
+	}
+	writeJSON(w, map[string]any{"ok": false, "error": "kein funktionierender History-Pfad", "attempts": results})
 }
 
 // --- Main ---
