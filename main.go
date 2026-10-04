@@ -809,6 +809,217 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(e.data)
 }
 
+// ---------------------------------------------------------------------------
+// Alternativer Web-Client: Profil, Rang, Historie, Freunde, Gameflow, Collections
+// ---------------------------------------------------------------------------
+
+type collectionOwnership struct {
+	Owned bool `json:"owned"`
+}
+
+func (a *App) summonerInfo(c *Client) map[string]any {
+	var sm struct {
+		SummonerID int64  `json:"summonerId"`
+		GameName   string `json:"gameName"`
+		TagLine    string `json:"tagLine"`
+		Level      int    `json:"summonerLevel"`
+		Icon       int    `json:"profileIconId"`
+	}
+	out := map[string]any{}
+	if c.getJSON("/lol-summoner/v1/current-summoner", &sm) == nil {
+		out = map[string]any{
+			"id": sm.SummonerID, "name": sm.GameName, "tag": sm.TagLine,
+			"level": sm.Level, "icon": sm.Icon,
+			"iconPath": fmt.Sprintf("/lol-game-data/assets/v1/profile-icons/%d.jpg", sm.Icon),
+		}
+	}
+	return out
+}
+
+func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	out := map[string]any{"ok": true}
+	sm := a.summonerInfo(c)
+	out["summoner"] = sm
+	sid, _ := sm["id"].(int64)
+
+	var phase string
+	if c.getJSON("/lol-gameflow/v1/gameflow-phase", &phase) == nil {
+		out["gameflow"] = phase
+	}
+
+	// Champion-Map + Besitz (für Historie + Collections)
+	champNames := map[int]string{}
+	var inv []struct {
+		ID   int                  `json:"id"`
+		Name string               `json:"name"`
+		Own  collectionOwnership  `json:"ownership"`
+	}
+	ownedChamps := 0
+	totalChamps := 0
+	if sid != 0 && c.getJSON(fmt.Sprintf("/lol-champions/v1/inventories/%d/champions", sid), &inv) == nil {
+		totalChamps = len(inv)
+		for _, ch := range inv {
+			champNames[ch.ID] = ch.Name
+			if ch.Own.Owned {
+				ownedChamps++
+			}
+		}
+	}
+	out["collections"] = map[string]any{"owned": ownedChamps, "total": totalChamps}
+
+	// Match-History (letzte 5)
+	history := []map[string]any{}
+	if sid != 0 {
+		var hist struct {
+			Games struct {
+				Games []struct {
+					GameID  int64  `json:"gameId"`
+					Created int64  `json:"gameCreation"`
+					Mode    string `json:"gameMode"`
+					Parts   []struct {
+						SummonerID int64 `json:"summonerId"`
+						ChampionID int   `json:"championId"`
+						Stats      struct {
+							Win     bool  `json:"win"`
+							Kills   int   `json:"kills"`
+							Deaths  int   `json:"deaths"`
+							Assists int   `json:"assists"`
+							CS      int   `json:"cs"`
+						} `json:"stats"`
+					} `json:"participants"`
+				} `json:"games"`
+			} `json:"games"`
+		}
+		if c.getJSON(fmt.Sprintf("/lol-match-history/v1/products/lol/%d/matches?begIndex=0&endIndex=5", sid), &hist) == nil {
+			for _, g := range hist.Games.Games {
+				row := map[string]any{"mode": g.Mode, "created": g.Created}
+				first := -1
+				for i, p := range g.Parts {
+					if p.SummonerID == sid {
+						first = i
+						break
+					}
+					if first < 0 && i == 0 {
+						first = 0
+					}
+				}
+				if first >= 0 {
+					p := g.Parts[first]
+					ch := champNames[p.ChampionID]
+					if ch == "" {
+						ch = fmt.Sprintf("#%d", p.ChampionID)
+					}
+					row["champion"] = ch
+					row["win"] = p.Stats.Win
+					row["kills"] = p.Stats.Kills
+					row["deaths"] = p.Stats.Deaths
+					row["assists"] = p.Stats.Assists
+					row["cs"] = p.Stats.CS
+				}
+				history = append(history, row)
+			}
+		}
+	}
+	out["history"] = history
+
+	// Freunde (erste 30, readonly)
+	var friends []struct {
+		Name  string `json:"name"`
+		Avail string `json:"availability"`
+		Note  string `json:"statusMessage"`
+	}
+	if c.getJSON("/lol-chat/v1/friends", &friends) == nil {
+		fs := []map[string]any{}
+		for _, f := range friends {
+			if len(fs) >= 30 {
+				break
+			}
+			fs = append(fs, map[string]any{"name": f.Name, "avail": f.Avail, "note": f.Note})
+		}
+		out["friends"] = fs
+	}
+
+	// Rang (best effort)
+	var rrs struct {
+		QueueMap map[string]struct {
+			Tier     string `json:"tier"`
+			Division string `json:"division"`
+			LP       int    `json:"leaguePoints"`
+		} `json:"queueMap"`
+	}
+	if c.getJSON("/lol-ranked/v1/current-ranked-stats", &rrs) == nil {
+		ranks := []map[string]any{}
+		for q, v := range rrs.QueueMap {
+			ranks = append(ranks, map[string]any{"queue": q, "tier": v.Tier, "division": v.Division, "lp": v.LP})
+		}
+		sort.Slice(ranks, func(i, j int) bool {
+			return ranks[i]["queue"].(string) < ranks[j]["queue"].(string)
+		})
+		out["rank"] = ranks
+	}
+
+	writeJSON(w, out)
+}
+
+func (a *App) collectionsHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	out := map[string]any{"ok": true}
+	sm := a.summonerInfo(c)
+	out["summoner"] = sm
+	sid, ok := sm["id"].(int64)
+	if !ok || sid == 0 {
+		writeJSON(w, out)
+		return
+	}
+
+	var inv []struct {
+		ID   int                 `json:"id"`
+		Name string              `json:"name"`
+		Own  collectionOwnership `json:"ownership"`
+	}
+	owned := 0
+	if c.getJSON(fmt.Sprintf("/lol-champions/v1/inventories/%d/champions", sid), &inv) == nil {
+		for _, ch := range inv {
+			if ch.Own.Owned {
+				owned++
+			}
+		}
+		out["champions"] = map[string]any{"owned": owned, "total": len(inv)}
+	}
+
+	var skins []struct {
+		ID      int                 `json:"id"`
+		ChampID int                 `json:"championId"`
+		Name    string              `json:"name"`
+		Own     collectionOwnership `json:"ownership"`
+	}
+	ownedSkins := 0
+	skinNames := []string{}
+	if c.getJSON(fmt.Sprintf("/lol-collections/v1/inventories/%d/skins", sid), &skins) == nil {
+		for _, sk := range skins {
+			if sk.Own.Owned {
+				ownedSkins++
+				if len(skinNames) < 200 {
+					skinNames = append(skinNames, sk.Name)
+				}
+			}
+		}
+		sort.Strings(skinNames)
+		out["skins"] = map[string]any{"owned": ownedSkins, "names": skinNames}
+	}
+
+	writeJSON(w, out)
+}
+
 // --- Main ---
 
 // defaultAllowedOrigin ist die offizielle WebUI-Adresse. Sie ist
@@ -935,6 +1146,8 @@ func main() {
 	mux.HandleFunc("/api/craft", app.corsAndGuard(app.craftHandler))
 	mux.HandleFunc("/api/img", app.corsAndGuard(app.imgHandler))
 	mux.HandleFunc("/api/stream", app.corsAndGuard(app.streamHandler))
+	mux.HandleFunc("/api/client", app.corsAndGuard(app.clientHandler))
+	mux.HandleFunc("/api/collections", app.corsAndGuard(app.collectionsHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
 	ln, err := net.Listen("tcp", addr)
