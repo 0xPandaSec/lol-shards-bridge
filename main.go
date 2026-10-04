@@ -935,6 +935,34 @@ func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
 	return out, names
 }
 
+func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	var all []lcuQueue
+	if err := c.getJSON("/lol-game-queues/v1/queues", &all); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	preview := []map[string]any{}
+	for _, q := range all {
+		preview = append(preview, map[string]any{
+			"id": q.ID, "name": q.Name, "gameMode": q.GameMode,
+			"type": q.Type, "availability": q.QueueAvailability,
+		})
+	}
+	played, names := a.playableQueues(c)
+	writeJSON(w, map[string]any{
+		"ok": true,
+		"total": len(all),
+		"preview": preview,
+		"playable": played,
+		"nameCount": len(names),
+	})
+}
+
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
 	c := a.getClient()
 	if c == nil {
@@ -1378,6 +1406,7 @@ func main() {
 	mux.HandleFunc("/api/cancel", app.corsAndGuard(app.cancelHandler))
 	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
 	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
+	mux.HandleFunc("/api/debug/queues", app.corsAndGuard(app.debugQueuesHandler))
 	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
