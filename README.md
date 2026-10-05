@@ -14,6 +14,16 @@ The **LoL-Shards-WebUI** takes care of that for you — sorting, multi-select,
 **unlock champions**. The WebUI runs at **https://lolshards.pandasec.de**
 and shows your shards at a glance.
 
+## True, the client already has a disenchant — but not like this
+
+The League client's built-in option can only disenchant **everything at
+once** (and does **not** cover skins). This tool is the opposite: you pick
+**exactly** which **champions or skins** to disenchant — a single shard,
+a filtered selection, or everything at once. Skins included.
+
+Source & releases: [github.com/0xPandaSec/lol-shards-bridge](https://github.com/0xPandaSec/lol-shards-bridge)
+
+
 ## Why the bridge?
 
 Your shards do **not** live on a server — they only exist in your local
