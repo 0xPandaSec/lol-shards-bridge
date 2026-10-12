@@ -449,67 +449,94 @@ func currencyPool(c *Client, currencyID string) (int64, bool) {
 }
 
 func (a *App) performCrafts(actions []Action) []CraftResult {
-	var results []CraftResult
 	var loot []LootItem
 	a.lockList(&loot)
-	for _, ac := range actions {
-		r := CraftResult{LootID: ac.LootID, Name: ac.Name, Action: ac.Action, Count: ac.Count}
-		item := findLoot(loot, ac.LootID)
+	results := make([]CraftResult, len(actions))
+	for i, ac := range actions {
+		results[i] = CraftResult{LootID: ac.LootID, Name: ac.Name, Action: ac.Action, Count: ac.Count}
+	}
+	// Vorprüfungen + Gruppierung: alle Aktionen mit gleichem Rezept, gleicher
+	// Währung und gleicher Stückzahl werden zu EINEM Craft-Call zusammengefasst.
+	type batchKey struct {
+		recipe   string
+		currency string
+		count    int
+	}
+	batches := map[batchKey][]string{}
+	batchIdx := map[batchKey][]int{}
+	needByCur := map[string]int64{}
+	for i, ac := range actions {
 		count := ac.Count
 		if count < 1 {
 			count = 1
 		}
+		results[i].Count = count
+		item := findLoot(loot, ac.LootID)
 		if item == nil {
-			r.Message = "Loot nicht gefunden (möglicherweise bereits verbraucht)"
-			results = append(results, r)
+			results[i].Message = "Loot nicht gefunden (möglicherweise bereits verbraucht)"
 			continue
 		}
-		var recipe string
-		var currency string
+		var recipe, currency string
 		if ac.Action == "disenchant" {
 			recipe = pick(item.DisenchantRecipe, a.service.recipesInfo(ac.LootID).Disenchant)
 			if recipe == "" {
-				r.Message = "Kein Entzauber-Rezept vorhanden"
-				results = append(results, r)
+				results[i].Message = "Kein Entzauber-Rezept vorhanden"
 				continue
 			}
 		} else {
 			rec := a.service.recipesInfo(ac.LootID)
 			recipe = rec.Upgrade
 			if recipe == "" {
-				r.Message = "Nicht aktivierbar (Champion/Skin bereits permanent?)"
-				results = append(results, r)
+				results[i].Message = "Nicht aktivierbar (Champion/Skin bereits permanent?)"
 				continue
 			}
 			currency = rec.UpgradeCurrency
 			if currency != "" {
-				need := rec.UpgradeCost * count
-				pool, ok := currencyPool(a.getClient(), currency)
-				if ok && pool < int64(need) {
-					r.Message = fmt.Sprintf("Zu wenig Essenz: braucht %d von %s/%d", need, currency, pool)
-					results = append(results, r)
-					continue
-				}
+				needByCur[currency] += int64(rec.UpgradeCost) * int64(count)
 			}
 		}
-		ok := true
-		for i := 0; i < count; i++ {
-			if err := a.craftOnce(recipe, ac.LootID, currency); err != nil {
-				ok = false
-				r.Message = err.Error()
-				break
+		key := batchKey{recipe, currency, count}
+		batches[key] = append(batches[key], ac.LootID)
+		batchIdx[key] = append(batchIdx[key], i)
+		results[i].OK = true
+	}
+	// Essenz-Verbrauch gesammelt prüfen (statt pro Einzeltitel)
+	for currency, need := range needByCur {
+		pool, ok := currencyPool(a.getClient(), currency)
+		if ok && pool >= need {
+			continue
+		}
+		for key := range batches {
+			if key.currency != currency {
+				continue
 			}
-			time.Sleep(50 * time.Millisecond)
+			for _, i := range batchIdx[key] {
+				results[i].OK = false
+				results[i].Message = fmt.Sprintf("Zu wenig Essenz: braucht %d von %s/%d", need, currency, pool)
+			}
+			delete(batches, key)
+		}
+	}
+	// Ausführung: ein Call pro Batch
+	for key, ids := range batches {
+		if err := a.craftBatch(key.recipe, ids, key.currency, key.count); err != nil {
+			for _, i := range batchIdx[key] {
+				results[i].OK = false
+				results[i].Message = err.Error()
+			}
+			continue
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for i := range results {
+		if !results[i].OK || results[i].Message != "" {
+			continue
 		}
 		tip := "entzaubert"
-		if ac.Action == "upgrade" {
+		if results[i].Action == "upgrade" {
 			tip = "aktiviert"
 		}
-		if ok {
-			r.Message = fmt.Sprintf("%d x %s erfolgreich %s", count, ac.Name, tip)
-		}
-		r.OK = ok
-		results = append(results, r)
+		results[i].Message = fmt.Sprintf("%d x %s erfolgreich %s", results[i].Count, results[i].Name, tip)
 	}
 	return results
 }
@@ -557,25 +584,44 @@ func (a *App) lockList(out *[]LootItem) bool {
 	return c.getJSON("/lol-loot/v1/player-loot", out) == nil
 }
 
-func (a *App) craftOnce(recipe, lootID, currency string) error {
-	ids := []string{lootID}
-	if currency != "" {
-		ids = append(ids, currency)
-	}
+// craftBatch führt einen Craft-Call mit mehreren Loot-IDs aus (LootCraftParams).
+// Schlägt das Batch-Format fehl, greift das alte Einzeltitel-Format zurück.
+func (a *App) craftBatch(recipe string, lootIDs []string, currency string, repeat int) error {
 	c := a.getClient()
 	if c == nil {
 		return &LcuError{0, "keine LCU-Verbindung"}
 	}
-	_, err := c.do("POST", "/lol-loot/v1/recipes/"+url.PathEscape(recipe)+"/craft", ids)
-	if err != nil {
-		if le, ok := err.(*LcuError); ok && le.Status == 0 && a.refresh() {
-			c2 := a.getClient()
-			if _, err2 := c2.do("POST", "/lol-loot/v1/recipes/"+url.PathEscape(recipe)+"/craft", ids); err2 == nil {
-				return nil
+	ids := make([]string, 0, len(lootIDs)+1)
+	ids = append(ids, lootIDs...)
+	if currency != "" {
+		ids = append(ids, currency)
+	}
+	esc := "/lol-loot/v1/recipes/" + url.PathEscape(recipe) + "/craft"
+	if _, err := c.do("POST", esc, map[string]any{"lootId": ids, "repeat": repeat}); err == nil {
+		return nil
+	}
+	// Fallback: Einzeltitel (altes Format), inkl. Refresh-Retry
+	for _, one := range lootIDs {
+		oneIds := []string{one}
+		if currency != "" {
+			oneIds = append(oneIds, currency)
+		}
+		for r := 0; r < repeat; r++ {
+			_, err := c.do("POST", esc, oneIds)
+			if err == nil {
+				continue
 			}
+			if a.refresh() {
+				if c2 := a.getClient(); c2 != nil {
+					if _, err2 := c2.do("POST", esc, oneIds); err2 == nil {
+						continue
+					}
+				}
+			}
+			return err
 		}
 	}
-	return err
+	return nil
 }
 
 func (a *App) refresh() bool {
