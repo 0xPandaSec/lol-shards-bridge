@@ -99,6 +99,15 @@ func findLockfile() *Lockfile {
 	return nil
 }
 
+func lockfilePath() string {
+	for _, p := range lockfileCandidates() {
+		if readLockfile(p) != nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 // LCU-HTTP-Client (selbstsigniertes Zertifikat ok)
 // ---------------------------------------------------------------------------
@@ -705,8 +714,57 @@ type App struct {
 	service *Service
 	hub     *Hub
 	imgCache map[string]imgEntry
+	feRootCache string
 	key     string
 	origins []string
+}
+
+// feRoot ermittelt das LoL-Installationsverzeichnis (über das Lockfile).
+func (a *App) feRoot() string {
+	a.imgMu.Lock()
+	r := a.feRootCache
+	a.imgMu.Unlock()
+	if r != "" {
+		return r
+	}
+	lp := lockfilePath()
+	if lp == "" {
+		return ""
+	}
+	r = filepath.Dir(lp)
+	a.imgMu.Lock()
+	a.feRootCache = r
+	a.imgMu.Unlock()
+	return r
+}
+
+// feAssetData liest statische Client-Assets (/fe/...) direkt von der Festplatte,
+// da die LCU-API diese Pfade nicht ausliefert.
+func (a *App) feAssetData(p string) ([]byte, bool) {
+	rest := strings.TrimPrefix(p, "/fe/")
+	i := strings.Index(rest, "/")
+	if i <= 0 {
+		return nil, false
+	}
+	plugin := "rcf-fe-" + rest[:i]
+	sub := filepath.FromSlash(rest[i+1:])
+	root := a.feRoot()
+	if root == "" {
+		return nil, false
+	}
+	cands := []string{
+		filepath.Join(root, "LeagueClient", "plugins", plugin, sub),
+		filepath.Join(root, "LeagueClient", "plugins", plugin, plugin, sub),
+		filepath.Join(root, "LeagueClientUx", "plugins", plugin, sub),
+		filepath.Join(root, "LeagueClientUx", "plugins", plugin, plugin, sub),
+		filepath.Join(root, "plugins", plugin, sub),
+	}
+	for _, c := range cands {
+		if b, err := os.ReadFile(c); err == nil {
+			return b, true
+		}
+	}
+	return nil, false
 }
 
 func (a *App) getClient() *Client {
@@ -1027,33 +1085,41 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	e, ok := a.imgCache[p]
 	a.imgMu.Unlock()
 	if !ok {
-		c := a.getClient()
-		if c == nil {
-			w.WriteHeader(http.StatusNotFound)
-			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
-			return
-		}
-		data, err := c.do("GET", p, nil)
-		if err != nil {
-			// Statische /fe/-Assets: zweiter Versuch ohne Auth-Header
-			if c2 := a.getClient(); c2 != nil {
-				if d2, err2 := c2.doNoAuth("GET", p); err2 == nil {
-					data, err = d2, nil
-				}
-			}
-		}
-		if err != nil {
-			// Fallback: neutrales Platzhalter-SVG (nie kaputte Bilder)
-			w.Header().Set("Content-Type", "image/svg+xml")
-			w.Header().Set("Cache-Control", "no-store")
-			w.Write([]byte(chestSVG))
-			return
-		}
 		ctype := "image/jpeg"
 		if strings.HasSuffix(strings.ToLower(p), ".png") {
 			ctype = "image/png"
 		}
-		e = imgEntry{data: data, ctype: ctype}
+		// Statische /fe/-Assets von der Platte (LCU-API lehnt diese Pfade ab)
+		if strings.HasPrefix(p, "/fe/") {
+			if data, ok2 := a.feAssetData(p); ok2 {
+				e = imgEntry{data: data, ctype: ctype}
+			}
+		}
+		if e.data == nil {
+			c := a.getClient()
+			if c == nil {
+				w.WriteHeader(http.StatusNotFound)
+				writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
+				return
+			}
+			data, err := c.do("GET", p, nil)
+			if err != nil {
+				// Statische /fe/-Assets: zweiter Versuch ohne Auth-Header
+				if c2 := a.getClient(); c2 != nil {
+					if d2, err2 := c2.doNoAuth("GET", p); err2 == nil {
+						data, err = d2, nil
+					}
+				}
+			}
+			if err != nil {
+				// Fallback: neutrales Platzhalter-SVG (nie kaputte Bilder)
+				w.Header().Set("Content-Type", "image/svg+xml")
+				w.Header().Set("Cache-Control", "no-store")
+				w.Write([]byte(chestSVG))
+				return
+			}
+			e = imgEntry{data: data, ctype: ctype}
+		}
 		a.imgMu.Lock()
 		if len(a.imgCache) > 400 {
 			a.imgCache = map[string]imgEntry{}
@@ -1306,7 +1372,7 @@ func (a *App) debugImgHandler(w http.ResponseWriter, r *http.Request) {
 		err = nil
 	}
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "withAuth": attempt1, "noAuth": attempt2})
+		writeJSON(w, map[string]any{"ok": false, "withAuth": attempt1, "noAuth": attempt2, "disk": "nein"})
 		return
 	}
 	head := data
@@ -1314,7 +1380,13 @@ func (a *App) debugImgHandler(w http.ResponseWriter, r *http.Request) {
 		head = head[:16]
 	}
 	hex := fmt.Sprintf("%x", head)
-	writeJSON(w, map[string]any{"ok": true, "len": len(data), "headHex": hex, "withAuth": attempt1, "noAuth": attempt2})
+	diskInfo := "nein"
+	if strings.HasPrefix(p, "/fe/") {
+		if b, ok2 := a.feAssetData(p); ok2 {
+			diskInfo = fmt.Sprintf("ja (%d Bytes)", len(b))
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true, "len": len(data), "headHex": hex, "withAuth": attempt1, "noAuth": attempt2, "disk": diskInfo})
 }
 
 func (a *App) debugMaterialsHandler(w http.ResponseWriter, r *http.Request) {
