@@ -205,6 +205,8 @@ type RecipeInfo struct {
 	Upgrade         string
 	UpgradeCost     int
 	UpgradeCurrency string
+	Open            string
+	OpenCurrency    string
 }
 
 type championOwnership struct {
@@ -254,21 +256,34 @@ func (s *Service) recipesInfo(lootID string) *RecipeInfo {
 	res := &RecipeInfo{}
 	if err := client.getJSON("/lol-loot/v1/recipes/initial-item/"+url.PathEscape(lootID), &list); err == nil {
 		for _, r := range list {
-			switch r.Type {
-			case "DISENCHANT":
-				res.Disenchant = r.RecipeName
-			case "UPGRADE":
-				res.Upgrade = r.RecipeName
+		switch r.Type {
+		case "DISENCHANT":
+			res.Disenchant = r.RecipeName
+		case "UPGRADE":
+			res.Upgrade = r.RecipeName
+			for _, slot := range r.Slots {
+				for _, id := range slot.LootIDs {
+					if strings.HasPrefix(id, "CURRENCY_") {
+						res.UpgradeCost = slot.Quantity
+						res.UpgradeCurrency = id
+						break
+					}
+				}
+			}
+		case "CRAFT":
+			// Truhen/Orbs: Öffnen (ggf. mit Material wie Schlüsselfragmenten)
+			if res.Open == "" {
+				res.Open = r.RecipeName
 				for _, slot := range r.Slots {
 					for _, id := range slot.LootIDs {
-						if strings.HasPrefix(id, "CURRENCY_") {
-							res.UpgradeCost = slot.Quantity
-							res.UpgradeCurrency = id
+						if strings.HasPrefix(id, "CURRENCY_") || strings.HasPrefix(id, "MATERIAL_") {
+							res.OpenCurrency = id
 							break
 						}
 					}
 				}
 			}
+		}
 		}
 	}
 	s.mu.Lock()
@@ -378,6 +393,7 @@ func (s *Service) summary() (map[string]any, error) {
 	champs := []map[string]any{}
 	skins := []map[string]any{}
 	wards := []map[string]any{}
+	materials := []map[string]any{}
 	for _, it := range loot {
 		switch it.Type {
 		case "CHAMPION_RENTAL":
@@ -386,6 +402,28 @@ func (s *Service) summary() (map[string]any, error) {
 			skins = append(skins, s.serialize(it, "skin", owned))
 		case "WARDSKIN_RENTAL":
 			wards = append(wards, s.serialize(it, "ward", owned))
+		case "CURRENCY":
+			// Zähler separat
+		default:
+			// Materialien: Truhen/Orbs mit Öffnen-Rezept (Schlüssel außen vor)
+			if strings.HasPrefix(it.LootID, "MATERIAL_key") {
+				continue
+			}
+			rec := s.recipesInfo(it.LootID)
+			if rec.Open == "" {
+				continue
+			}
+			name := it.ItemDesc
+			if name == "" {
+				name = it.LocalizedName
+			}
+			if name == "" {
+				name = it.LootID
+			}
+			materials = append(materials, map[string]any{
+				"lootId": it.LootID, "kind": "material", "name": name,
+				"count": it.Count, "tile": it.TilePath,
+			})
 		}
 	}
 	sm := map[string]any{"gameName": "Spieler", "tagLine": "", "summonerLevel": 0}
@@ -401,6 +439,7 @@ func (s *Service) summary() (map[string]any, error) {
 		"championShards": champs,
 		"skinShards":     skins,
 		"wardShards":     wards,
+		"materials":      materials,
 		"essence":        map[string]int64{"blue": cur["CURRENCY_champion"], "orange": cur["CURRENCY_cosmetic"]},
 		"summoner":       sm,
 	}, nil
@@ -483,6 +522,14 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 				results[i].Message = "Kein Entzauber-Rezept vorhanden"
 				continue
 			}
+		} else if ac.Action == "open" {
+			rec := a.service.recipesInfo(ac.LootID)
+			recipe = rec.Open
+			if recipe == "" {
+				results[i].Message = "Kann nicht geöffnet werden"
+				continue
+			}
+			currency = rec.OpenCurrency
 		} else {
 			rec := a.service.recipesInfo(ac.LootID)
 			recipe = rec.Upgrade
@@ -814,8 +861,54 @@ func (a *App) craftHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": "ungültiger Request"})
 		return
 	}
+	var before []LootItem
+	a.lockList(&before)
 	results := a.performCrafts(body.Actions)
-	writeJSON(w, map[string]any{"ok": true, "results": results})
+	writeJSON(w, map[string]any{"ok": true, "results": results, "gained": a.lootGained(before)})
+}
+
+// lootGained vergleicht das Loot vor/nach der Craft-Aktion und liefert alles,
+// was neu dazugekommen ist (z.B. Inhalt geöffneter Truhen).
+func (a *App) lootGained(before []LootItem) []map[string]any {
+	var after []LootItem
+	if !a.lockList(&after) {
+		return nil
+	}
+	beforeCount := map[string]int{}
+	for _, it := range before {
+		beforeCount[it.LootID] = it.Count
+	}
+	gained := []map[string]any{}
+	for _, it := range after {
+		grew := it.Count - beforeCount[it.LootID]
+		if grew <= 0 {
+			continue
+		}
+		if it.Type == "CURRENCY" {
+			continue // Essenz wird separat angezeigt
+		}
+		name := it.ItemDesc
+		if name == "" {
+			name = it.LocalizedName
+		}
+		if name == "" {
+			name = it.LootID
+		}
+		kind := "material"
+		switch it.Type {
+		case "CHAMPION_RENTAL":
+			kind = "champion"
+		case "SKIN_RENTAL":
+			kind = "skin"
+		case "WARDSKIN_RENTAL":
+			kind = "ward"
+		}
+		gained = append(gained, map[string]any{
+			"lootId": it.LootID, "name": name, "kind": kind,
+			"count": grew, "tile": it.TilePath,
+		})
+	}
+	return gained
 }
 
 func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
