@@ -692,6 +692,8 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 		tip := "entzaubert"
 		if results[i].Action == "upgrade" {
 			tip = "aktiviert"
+		} else if results[i].Action == "open" {
+			tip = "geöffnet"
 		}
 		results[i].Message = fmt.Sprintf("%d x %s erfolgreich %s", results[i].Count, results[i].Name, tip)
 	}
@@ -1067,18 +1069,32 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 		return gained
 	}
 	var after []LootItem
-	gained := []map[string]any{}
-	for attempt := 0; attempt < 4; attempt++ {
-		time.Sleep(250 * time.Millisecond)
+	var prev []map[string]any
+	// Pollen bis stabil: Shards erscheinen sofort, Essenz/Icons verzögert.
+	for attempt := 0; attempt < 6; attempt++ {
+		time.Sleep(200 * time.Millisecond)
 		if !a.lockList(&after) {
 			break
 		}
-		gained = build(after)
-		if len(gained) > 0 {
-			break
+		gained := build(after)
+		if len(gained) > 0 && gainedEqual(prev, gained) {
+			return gained
 		}
+		prev = gained
 	}
-	return gained
+	return prev
+}
+
+func gainedEqual(a, b []map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ab, aerr := json.Marshal(a)
+	bb, berr := json.Marshal(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
 }
 
 const chestSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
