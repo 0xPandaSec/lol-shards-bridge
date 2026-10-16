@@ -1043,9 +1043,6 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 		if grew <= 0 {
 			continue
 		}
-		if it.Type == "CURRENCY" {
-			continue // Essenz wird separat angezeigt
-		}
 		name := it.ItemDesc
 		if name == "" {
 			name = it.LocalizedName
@@ -1061,6 +1058,8 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 			kind = "skin"
 		case "WARDSKIN_RENTAL":
 			kind = "ward"
+		case "CURRENCY":
+			kind = "currency"
 		}
 		gained = append(gained, map[string]any{
 			"lootId": it.LootID, "name": name, "kind": kind,
