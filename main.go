@@ -1459,29 +1459,43 @@ func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
 // liveHandler leitet die Live Client Data API (Port 2999, nur während
 // laufender Spiele erreichbar) weiter.
 func (a *App) liveHandler(w http.ResponseWriter, r *http.Request) {
-	req, err := http.NewRequest("GET", "https://127.0.0.1:2999/liveclientdata/allgamedata", nil)
+	const livePath = "https://127.0.0.1:2999/liveclientdata/allgamedata"
+	raw, err1 := liveFetch(livePath)
+	if err1 != nil {
+		var err2 error
+		raw, err2 = liveFetch(strings.Replace(livePath, "https://", "http://", 1))
+		if err2 != nil {
+			writeJSON(w, map[string]any{
+				"ok":     false,
+				"error":  "Kein Spiel läuft (Live-API nicht erreichbar)",
+				"detail": err1.Error() + " | " + err2.Error(),
+			})
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
+}
+
+func liveFetch(url string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
-		return
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := liveHTTP.Do(req)
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": "Kein Spiel läuft (Live-API nicht erreichbar)"})
-		return
+		return nil, err
 	}
 	defer resp.Body.Close()
 	raw, rerr := io.ReadAll(resp.Body)
 	if rerr != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": rerr.Error()})
-		return
+		return nil, rerr
 	}
 	if resp.StatusCode >= 400 {
-		writeJSON(w, map[string]any{"ok": false, "error": fmt.Sprintf("Live-API HTTP %d", resp.StatusCode)})
-		return
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Write(raw)
+	return raw, nil
 }
 
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
