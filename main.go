@@ -1027,44 +1027,56 @@ func (a *App) craftHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // lootGained vergleicht das Loot vor/nach der Craft-Aktion und liefert alles,
-// was neu dazugekommen ist (z.B. Inhalt geöffneter Truhen).
+// was neu dazugekommen ist (z.B. Inhalt geöffneter Truhen inkl. Essenz).
+// Da der Client Bilanzen (Essenz) kurz verzögert aktualisiert, wird mehrfach geprüft.
 func (a *App) lootGained(before []LootItem) []map[string]any {
-	var after []LootItem
-	if !a.lockList(&after) {
-		return nil
-	}
 	beforeCount := map[string]int{}
 	for _, it := range before {
 		beforeCount[it.LootID] = it.Count
 	}
+	build := func(after []LootItem) []map[string]any {
+		gained := []map[string]any{}
+		for _, it := range after {
+			grew := it.Count - beforeCount[it.LootID]
+			if grew <= 0 {
+				continue
+			}
+			name := it.ItemDesc
+			if name == "" {
+				name = it.LocalizedName
+			}
+			if name == "" {
+				name = it.LootID
+			}
+			kind := "material"
+			switch it.Type {
+			case "CHAMPION", "CHAMPION_RENTAL":
+				kind = "champion"
+			case "SKIN", "SKIN_RENTAL":
+				kind = "skin"
+			case "WARDSKIN", "WARDSKIN_RENTAL":
+				kind = "ward"
+			case "CURRENCY":
+				kind = "currency"
+			}
+			gained = append(gained, map[string]any{
+				"lootId": it.LootID, "name": name, "kind": kind,
+				"count": grew, "tile": it.TilePath,
+			})
+		}
+		return gained
+	}
+	var after []LootItem
 	gained := []map[string]any{}
-	for _, it := range after {
-		grew := it.Count - beforeCount[it.LootID]
-		if grew <= 0 {
-			continue
+	for attempt := 0; attempt < 4; attempt++ {
+		time.Sleep(250 * time.Millisecond)
+		if !a.lockList(&after) {
+			break
 		}
-		name := it.ItemDesc
-		if name == "" {
-			name = it.LocalizedName
+		gained = build(after)
+		if len(gained) > 0 {
+			break
 		}
-		if name == "" {
-			name = it.LootID
-		}
-		kind := "material"
-		switch it.Type {
-		case "CHAMPION", "CHAMPION_RENTAL":
-			kind = "champion"
-		case "SKIN", "SKIN_RENTAL":
-			kind = "skin"
-		case "WARDSKIN", "WARDSKIN_RENTAL":
-			kind = "ward"
-		case "CURRENCY":
-			kind = "currency"
-		}
-		gained = append(gained, map[string]any{
-			"lootId": it.LootID, "name": name, "kind": kind,
-			"count": grew, "tile": it.TilePath,
-		})
 	}
 	return gained
 }
