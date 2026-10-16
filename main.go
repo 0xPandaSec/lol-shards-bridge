@@ -1164,6 +1164,39 @@ func isTFTQueue(q lcuQueue) bool {
 	return strings.Contains(strings.ToUpper(q.Type), "TFT") || q.GameMode == "TFT"
 }
 
+func (a *App) debugMaterialsHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	var loot []LootItem
+	if !a.lockList(&loot) {
+		writeJSON(w, map[string]any{"ok": false, "error": "Loot nicht lesbar"})
+		return
+	}
+	out := []map[string]any{}
+	for _, it := range loot {
+		if it.Type == "CURRENCY" || it.Type == "CHAMPION_RENTAL" || it.Type == "SKIN_RENTAL" || it.Type == "WARDSKIN_RENTAL" {
+			continue
+		}
+		entry := map[string]any{
+			"lootId": it.LootID, "type": it.Type, "count": it.Count,
+			"name": it.ItemDesc, "localized": it.LocalizedName, "tile": it.TilePath,
+		}
+		var list []lcuRecipe
+		if err := c.getJSON("/lol-loot/v1/recipes/initial-item/"+url.PathEscape(it.LootID), &list); err == nil {
+			rs := []map[string]any{}
+			for _, rec := range list {
+				rs = append(rs, map[string]any{"recipeName": rec.RecipeName, "type": rec.Type, "slots": rec.Slots})
+			}
+			entry["recipes"] = rs
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, map[string]any{"ok": true, "items": out})
+}
+
 func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
 	c := a.getClient()
 	if c == nil {
@@ -1655,6 +1688,7 @@ func main() {
 	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
 	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
 	mux.HandleFunc("/api/debug/queues", app.corsAndGuard(app.debugQueuesHandler))
+	mux.HandleFunc("/api/debug/materials", app.corsAndGuard(app.debugMaterialsHandler))
 	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
