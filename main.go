@@ -1074,6 +1074,13 @@ const chestSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` 
 	`<path d="M6 28h52" stroke="#c8aa6e" stroke-width="3"/>` +
 	`<rect x="26" y="23" width="12" height="10" rx="2" fill="#c8aa6e"/></svg>`
 
+var liveHTTP = &http.Client{
+	Timeout: 4 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+}
+
 func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("p")
 	if !strings.HasPrefix(p, "/lol-game-data/") && !strings.HasPrefix(p, "/fe/") {
@@ -1447,6 +1454,34 @@ func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
 		"playable": played,
 		"nameCount": len(names),
 	})
+}
+
+// liveHandler leitet die Live Client Data API (Port 2999, nur während
+// laufender Spiele erreichbar) weiter.
+func (a *App) liveHandler(w http.ResponseWriter, r *http.Request) {
+	req, err := http.NewRequest("GET", "https://127.0.0.1:2999/liveclientdata/allgamedata", nil)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := liveHTTP.Do(req)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "Kein Spiel läuft (Live-API nicht erreichbar)"})
+		return
+	}
+	defer resp.Body.Close()
+	raw, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": rerr.Error()})
+		return
+	}
+	if resp.StatusCode >= 400 {
+		writeJSON(w, map[string]any{"ok": false, "error": fmt.Sprintf("Live-API HTTP %d", resp.StatusCode)})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
 }
 
 func (a *App) clientHandler(w http.ResponseWriter, r *http.Request) {
@@ -1909,6 +1944,7 @@ func main() {
 	mux.HandleFunc("/api/collections", app.corsAndGuard(app.collectionsHandler))
 	mux.HandleFunc("/api/play", app.corsAndGuard(app.playHandler))
 	mux.HandleFunc("/api/cancel", app.corsAndGuard(app.cancelHandler))
+	mux.HandleFunc("/api/live", app.corsAndGuard(app.liveHandler))
 	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
 	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
 	mux.HandleFunc("/api/debug/queues", app.corsAndGuard(app.debugQueuesHandler))
