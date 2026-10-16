@@ -985,7 +985,7 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 
 func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("p")
-	if !strings.HasPrefix(p, "/lol-game-data/") {
+	if !strings.HasPrefix(p, "/lol-game-data/") && !strings.HasPrefix(p, "/fe/") {
 		writeJSON(w, map[string]any{"ok": false, "error": "invalid path"})
 		return
 	}
