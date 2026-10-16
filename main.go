@@ -1474,6 +1474,16 @@ func (a *App) liveHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// ok-Flag ergänzen, damit das Frontend die Antwort akzeptiert
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) == nil {
+		obj["ok"] = true
+		out, merr := json.Marshal(obj)
+		if merr == nil {
+			w.Write(out)
+			return
+		}
+	}
 	w.Write(raw)
 }
 
