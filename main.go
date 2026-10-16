@@ -172,6 +172,35 @@ func (c *Client) getJSON(path string, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
+// doNoAuth wie do(), aber ohne Authorization-Header (für statische /fe/-Assets).
+func (c *Client) doNoAuth(method, path string) ([]byte, error) {
+	u := fmt.Sprintf("https://127.0.0.1:%d/%s", c.port, strings.TrimLeft(path, "/"))
+	req, err := http.NewRequest(method, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return nil, &LcuError{0, err.Error()}
+	}
+	defer resp.Body.Close()
+	raw, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if resp.StatusCode >= 400 {
+		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		var dm map[string]any
+		if json.Unmarshal(raw, &dm) == nil {
+			if s, ok := dm["message"].(string); ok && s != "" {
+				msg = s
+			}
+		}
+		return raw, &LcuError{resp.StatusCode, msg}
+	}
+	return raw, nil
+}
+
 // ---------------------------------------------------------------------------
 // Loot-Datenmodell
 // ---------------------------------------------------------------------------
@@ -983,6 +1012,11 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 	return gained
 }
 
+const chestSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+	`<rect x="6" y="14" width="52" height="36" rx="6" fill="none" stroke="#c8aa6e" stroke-width="3"/>` +
+	`<path d="M6 28h52" stroke="#c8aa6e" stroke-width="3"/>` +
+	`<rect x="26" y="23" width="12" height="10" rx="2" fill="#c8aa6e"/></svg>`
+
 func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Query().Get("p")
 	if !strings.HasPrefix(p, "/lol-game-data/") && !strings.HasPrefix(p, "/fe/") {
@@ -1001,8 +1035,18 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		data, err := c.do("GET", p, nil)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
+			// Statische /fe/-Assets: zweiter Versuch ohne Auth-Header
+			if c2 := a.getClient(); c2 != nil {
+				if d2, err2 := c2.doNoAuth("GET", p); err2 == nil {
+					data, err = d2, nil
+				}
+			}
+		}
+		if err != nil {
+			// Fallback: neutrales Platzhalter-SVG (nie kaputte Bilder)
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Write([]byte(chestSVG))
 			return
 		}
 		ctype := "image/jpeg"
@@ -1250,8 +1294,19 @@ func (a *App) debugImgHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := c.do("GET", p, nil)
+	attempt1 := "ok"
 	if err != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		attempt1 = err.Error()
+	}
+	attempt2 := "ok"
+	if d2, err2 := c.doNoAuth("GET", p); err2 != nil {
+		attempt2 = err2.Error()
+	} else if err != nil {
+		data = d2
+		err = nil
+	}
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "withAuth": attempt1, "noAuth": attempt2})
 		return
 	}
 	head := data
@@ -1259,7 +1314,7 @@ func (a *App) debugImgHandler(w http.ResponseWriter, r *http.Request) {
 		head = head[:16]
 	}
 	hex := fmt.Sprintf("%x", head)
-	writeJSON(w, map[string]any{"ok": true, "len": len(data), "headHex": hex})
+	writeJSON(w, map[string]any{"ok": true, "len": len(data), "headHex": hex, "withAuth": attempt1, "noAuth": attempt2})
 }
 
 func (a *App) debugMaterialsHandler(w http.ResponseWriter, r *http.Request) {
