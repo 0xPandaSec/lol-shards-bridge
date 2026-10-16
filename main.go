@@ -995,11 +995,13 @@ func (a *App) imgHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		c := a.getClient()
 		if c == nil {
+			w.WriteHeader(http.StatusNotFound)
 			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
 			return
 		}
 		data, err := c.do("GET", p, nil)
 		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
 			writeJSON(w, map[string]any{"ok": false, "error": "image unavailable"})
 			return
 		}
@@ -1234,6 +1236,30 @@ func (a *App) playableQueues(c *Client) ([]map[string]any, map[int]string) {
 
 func isTFTQueue(q lcuQueue) bool {
 	return strings.Contains(strings.ToUpper(q.Type), "TFT") || q.GameMode == "TFT"
+}
+
+func (a *App) debugImgHandler(w http.ResponseWriter, r *http.Request) {
+	c := a.getClient()
+	if c == nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "keine Verbindung zum League-Client"})
+		return
+	}
+	p := r.URL.Query().Get("p")
+	if !strings.HasPrefix(p, "/lol-game-data/") && !strings.HasPrefix(p, "/fe/") {
+		writeJSON(w, map[string]any{"ok": false, "error": "invalid path"})
+		return
+	}
+	data, err := c.do("GET", p, nil)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	head := data
+	if len(head) > 16 {
+		head = head[:16]
+	}
+	hex := fmt.Sprintf("%x", head)
+	writeJSON(w, map[string]any{"ok": true, "len": len(data), "headHex": hex})
 }
 
 func (a *App) debugMaterialsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1761,6 +1787,7 @@ func main() {
 	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
 	mux.HandleFunc("/api/debug/queues", app.corsAndGuard(app.debugQueuesHandler))
 	mux.HandleFunc("/api/debug/materials", app.corsAndGuard(app.debugMaterialsHandler))
+	mux.HandleFunc("/api/debug/img", app.corsAndGuard(app.debugImgHandler))
 	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *flagPort)
