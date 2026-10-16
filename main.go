@@ -207,6 +207,7 @@ type RecipeInfo struct {
 	UpgradeCurrency string
 	Open            string
 	OpenCurrency    string
+	OpenCost        int
 }
 
 type championOwnership struct {
@@ -270,14 +271,18 @@ func (s *Service) recipesInfo(lootID string) *RecipeInfo {
 					}
 				}
 			}
-		case "CRAFT":
-			// Truhen/Orbs: Öffnen (ggf. mit Material wie Schlüsselfragmenten)
+		case "OPEN", "CRAFT":
+			// Truhen/Orbs: Öffnen (ggf. mit Material wie Schlüsseln)
 			if res.Open == "" {
 				res.Open = r.RecipeName
 				for _, slot := range r.Slots {
 					for _, id := range slot.LootIDs {
+						if id == lootID {
+							continue
+						}
 						if strings.HasPrefix(id, "CURRENCY_") || strings.HasPrefix(id, "MATERIAL_") {
 							res.OpenCurrency = id
+							res.OpenCost = slot.Quantity
 							break
 						}
 					}
@@ -418,7 +423,11 @@ func (s *Service) summary() (map[string]any, error) {
 				name = it.LocalizedName
 			}
 			if name == "" {
-				name = it.LootID
+				if strings.HasPrefix(it.LootID, "CHEST_") {
+					name = "Truhe " + strings.TrimPrefix(it.LootID, "CHEST_")
+				} else {
+					name = it.LootID
+				}
 			}
 			materials = append(materials, map[string]any{
 				"lootId": it.LootID, "kind": "material", "name": name,
@@ -530,6 +539,13 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 				continue
 			}
 			currency = rec.OpenCurrency
+			if currency != "" {
+				cost := rec.OpenCost
+				if cost < 1 {
+					cost = 1
+				}
+				needByCur[currency] += int64(cost) * int64(count)
+			}
 		} else {
 			rec := a.service.recipesInfo(ac.LootID)
 			recipe = rec.Upgrade
@@ -547,21 +563,77 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 		batchIdx[key] = append(batchIdx[key], i)
 		results[i].OK = true
 	}
-	// Essenz-Verbrauch gesammelt prüfen (statt pro Einzeltitel)
+	// Essenz-/Material-Verbrauch gesammelt prüfen (statt pro Einzeltitel)
 	for currency, need := range needByCur {
-		pool, ok := currencyPool(a.getClient(), currency)
-		if ok && pool >= need {
+		pool := int64(0)
+		if strings.HasPrefix(currency, "MATERIAL_") {
+			for _, it := range loot {
+				if it.LootID == currency {
+					pool = int64(it.Count)
+					break
+				}
+			}
+		} else {
+			pool, _ = currencyPool(a.getClient(), currency)
+		}
+		if pool >= need {
 			continue
 		}
-		for key := range batches {
-			if key.currency != currency {
-				continue
+		if strings.HasPrefix(currency, "MATERIAL_") {
+			// Knappes Material (z.B. Schlüssel) der Reihe nach zugeteilen
+			label := currency
+			if currency == "MATERIAL_key" {
+				label = "Schlüssel"
 			}
-			for _, i := range batchIdx[key] {
-				results[i].OK = false
-				results[i].Message = fmt.Sprintf("Zu wenig Essenz: braucht %d von %s/%d", need, currency, pool)
+			remaining := pool
+			keys := []batchKey{}
+			for k := range batches {
+				if k.currency == currency {
+					keys = append(keys, k)
+				}
 			}
-			delete(batches, key)
+			sort.Slice(keys, func(a, b int) bool { return batchIdx[keys[a]][0] < batchIdx[keys[b]][0] })
+			trimmed := map[batchKey][]string{}
+			trimmedIdx := map[batchKey][]int{}
+			for _, k := range keys {
+				take := k.count
+				if int64(take) > remaining {
+					take = int(remaining)
+				}
+				if take <= 0 {
+					for _, i := range batchIdx[k] {
+						results[i].OK = false
+						results[i].Message = "Kein " + label + " mehr"
+					}
+					delete(batches, k)
+					continue
+				}
+				remaining -= int64(take)
+				if take < k.count {
+					for _, i := range batchIdx[k] {
+						results[i].Message = fmt.Sprintf("Nur %d von %d geöffnet (%s aufgebraucht)", take, k.count, label)
+					}
+					nk := batchKey{k.recipe, k.currency, take}
+					trimmed[nk] = append(trimmed[nk], batches[k]...)
+					trimmedIdx[nk] = append(trimmedIdx[nk], batchIdx[k]...)
+					delete(batches, k)
+				}
+			}
+			for k, v := range trimmed {
+				batches[k] = append(batches[k], v...)
+				batchIdx[k] = append(batchIdx[k], trimmedIdx[k]...)
+			}
+		} else {
+			for key := range batches {
+				if key.currency != currency {
+					continue
+				}
+				for _, i := range batchIdx[key] {
+					results[i].OK = false
+					results[i].Message = fmt.Sprintf("Zu wenig Essenz: braucht %d von %s/%d", need, currency, pool)
+				}
+				delete(batches, key)
+			}
 		}
 	}
 	// Ausführung: ein Call pro Batch
