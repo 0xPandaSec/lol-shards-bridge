@@ -1052,11 +1052,11 @@ func (a *App) lootGained(before []LootItem) []map[string]any {
 		}
 		kind := "material"
 		switch it.Type {
-		case "CHAMPION_RENTAL":
+		case "CHAMPION", "CHAMPION_RENTAL":
 			kind = "champion"
-		case "SKIN_RENTAL":
+		case "SKIN", "SKIN_RENTAL":
 			kind = "skin"
-		case "WARDSKIN_RENTAL":
+		case "WARDSKIN", "WARDSKIN_RENTAL":
 			kind = "ward"
 		case "CURRENCY":
 			kind = "currency"
