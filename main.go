@@ -1456,6 +1456,26 @@ func (a *App) debugMaterialsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "items": out})
 }
 
+func (a *App) debugLootTypesHandler(w http.ResponseWriter, r *http.Request) {
+	var loot []LootItem
+	if !a.lockList(&loot) {
+		writeJSON(w, map[string]any{"ok": false, "error": "Loot nicht lesbar"})
+		return
+	}
+	types := map[string][]map[string]any{}
+	for _, it := range loot {
+		g := types[it.Type]
+		if len(g) < 10 {
+			g = append(g, map[string]any{
+				"lootId": it.LootID, "count": it.Count,
+				"name": it.ItemDesc, "localized": it.LocalizedName, "tile": it.TilePath,
+			})
+		}
+		types[it.Type] = g
+	}
+	writeJSON(w, map[string]any{"ok": true, "types": types})
+}
+
 func (a *App) debugQueuesHandler(w http.ResponseWriter, r *http.Request) {
 	c := a.getClient()
 	if c == nil {
@@ -2000,6 +2020,7 @@ func main() {
 	mux.HandleFunc("/api/debug/friends", app.corsAndGuard(app.debugFriendsHandler))
 	mux.HandleFunc("/api/debug/summoner", app.corsAndGuard(app.debugSummonerHandler))
 	mux.HandleFunc("/api/debug/queues", app.corsAndGuard(app.debugQueuesHandler))
+	mux.HandleFunc("/api/debug/loot-types", app.corsAndGuard(app.debugLootTypesHandler))
 	mux.HandleFunc("/api/debug/materials", app.corsAndGuard(app.debugMaterialsHandler))
 	mux.HandleFunc("/api/debug/img", app.corsAndGuard(app.debugImgHandler))
 	mux.HandleFunc("/api/debug/history", app.corsAndGuard(app.debugHistoryHandler))
