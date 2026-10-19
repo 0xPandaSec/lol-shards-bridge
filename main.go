@@ -123,19 +123,37 @@ type Client struct {
 	port  int
 	tok   string
 	httpc *http.Client
+	slow  *http.Client
 }
 
 func NewClient(port int, token string) *Client {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	return &Client{port: port, tok: token, httpc: &http.Client{Transport: tr, Timeout: 15 * time.Second}}
+	// Crafts (viele Items in einem Call) können im Client dauern.
+	trSlow := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	return &Client{
+		port:  port,
+		tok:   token,
+		httpc: &http.Client{Transport: tr, Timeout: 15 * time.Second},
+		slow:  &http.Client{Transport: trSlow, Timeout: 180 * time.Second},
+	}
 }
 
 func (c *Client) Port() int   { return c.port }
 func (c *Client) Token() string { return c.tok }
 
 func (c *Client) do(method, path string, payload any) ([]byte, error) {
+	return c.doWith(method, path, payload, c.httpc)
+}
+
+func (c *Client) doSlow(method, path string, payload any) ([]byte, error) {
+	return c.doWith(method, path, payload, c.slow)
+}
+
+func (c *Client) doWith(method, path string, payload any, hc *http.Client) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -151,7 +169,7 @@ func (c *Client) do(method, path string, payload any) ([]byte, error) {
 	}
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("riot:"+c.tok)))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, &LcuError{0, err.Error()}
 	}
@@ -551,6 +569,8 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 	batches := map[batchKey][]string{}
 	batchIdx := map[batchKey][]int{}
 	needByCur := map[string]int64{}
+	origCount := map[string]int{}
+	craftFailed := []int{}
 	for i, ac := range actions {
 		count := ac.Count
 		if count < 1 {
@@ -562,6 +582,7 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 			results[i].Message = "Loot nicht gefunden (möglicherweise bereits verbraucht)"
 			continue
 		}
+		origCount[ac.LootID] = item.Count
 		var recipe, currency string
 		if ac.Action == "disenchant" {
 			recipe = pick(item.DisenchantRecipe, a.service.recipesInfo(ac.LootID).Disenchant)
@@ -680,10 +701,39 @@ func (a *App) performCrafts(actions []Action) []CraftResult {
 			for _, i := range batchIdx[key] {
 				results[i].OK = false
 				results[i].Message = err.Error()
+				craftFailed = append(craftFailed, i)
 			}
 			continue
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	// Nachkontrolle: Lief der Craft trotz Timeout-Fehler durch (der Client
+	// braucht bei vielen Items länger), den Erfolg über den Bestand bestätigen.
+	if len(craftFailed) > 0 {
+		var post []LootItem
+		if a.lockList(&post) {
+			postCount := map[string]int{}
+			for _, it := range post {
+				postCount[it.LootID] = it.Count
+			}
+			for _, i := range craftFailed {
+				orig, had := origCount[results[i].LootID]
+				if !had {
+					continue
+				}
+				if postCount[results[i].LootID] < orig {
+					tip := "entzaubert"
+					if results[i].Action == "upgrade" {
+						tip = "aktiviert"
+					} else if results[i].Action == "open" {
+						tip = "geöffnet"
+					}
+					done := orig - postCount[results[i].LootID]
+					results[i].OK = true
+					results[i].Message = fmt.Sprintf("%d x %s erfolgreich %s (nachträglich bestätigt)", done, results[i].Name, tip)
+				}
+			}
+		}
 	}
 	for i := range results {
 		if !results[i].OK || results[i].Message != "" {
@@ -805,7 +855,7 @@ func (a *App) craftBatch(recipe string, lootIDs []string, currency string, repea
 		ids = append(ids, currency)
 	}
 	esc := "/lol-loot/v1/recipes/" + url.PathEscape(recipe) + "/craft"
-	if _, err := c.do("POST", esc, map[string]any{"lootId": ids, "repeat": repeat}); err == nil {
+	if _, err := c.doSlow("POST", esc, map[string]any{"lootId": ids, "repeat": repeat}); err == nil {
 		return nil
 	}
 	// Fallback: Einzeltitel (altes Format), inkl. Refresh-Retry
@@ -815,13 +865,13 @@ func (a *App) craftBatch(recipe string, lootIDs []string, currency string, repea
 			oneIds = append(oneIds, currency)
 		}
 		for r := 0; r < repeat; r++ {
-			_, err := c.do("POST", esc, oneIds)
+			_, err := c.doSlow("POST", esc, oneIds)
 			if err == nil {
 				continue
 			}
 			if a.refresh() {
 				if c2 := a.getClient(); c2 != nil {
-					if _, err2 := c2.do("POST", esc, oneIds); err2 == nil {
+					if _, err2 := c2.doSlow("POST", esc, oneIds); err2 == nil {
 						continue
 					}
 				}
